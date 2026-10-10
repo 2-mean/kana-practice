@@ -60,18 +60,41 @@
   .wl-kind .seg { gap: 4px; }
   .wl-kind .seg-face { padding: 0 11px; }
 }
-.wl-tagbox { display: grid; gap: 0; min-width: 0; }
+/* minmax(0, 1fr): a long tag name in an <option> must not widen the page past a phone screen */
+.wl-tagbox { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0; }
 .wl-tagbox:empty { display: none; }
 .wl-tagbox .field-label { margin-bottom: 8px; }
 
-.wl-selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 44px; }
-.wl-selbar.has-sel {
-  padding: 6px 8px 6px 14px; border-radius: var(--radius-sm);
-  background: var(--shu-soft); border: 1px solid var(--shu);
+/* 단어 선택: count + 선택한 것만 연습 · 선택 해제 / 전체 · 지금 목록 선택 · 태그로 선택 / tag chips */
+.wl-selbar {
+  display: grid; gap: 6px; padding: 6px 8px 8px 14px; min-width: 0;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm);
 }
+.wl-selbar.has-sel { border-color: var(--shu); box-shadow: inset 4px 0 0 var(--shu); }
+.wl-selhead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 44px; }
+.wl-selstatus { margin-right: auto; min-width: 0; }
+.wl-selstatus b { font-size: 1.1rem; margin-right: 2px; }
 .wl-selhint { color: var(--ink-3); font-size: 0.88rem; }
-.wl-selcount { margin-right: auto; }
-.wl-selcount b { font-size: 1.1rem; margin-right: 2px; }
+.wl-selacts, .wl-selbulk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.wl-selacts:empty { display: none; }
+.wl-tagsel-toggle { margin-left: -2px; }
+.wl-tagsel-toggle .ic { transition: transform 0.15s; }
+.wl-tagsel-toggle[aria-expanded="true"] .ic { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .wl-tagsel-toggle .ic { transition: none; } }
+.wl-tagsel { display: grid; gap: 8px; margin-top: 2px; padding-top: 10px; border-top: 1px dashed var(--line-strong); }
+.wl-tagsel-hint { color: var(--ink-3); font-size: 0.85rem; line-height: 1.5; }
+.wl-tchips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* tag chips: ☐ none · ⊟ some (dashed, '6/21') · ☑ all (filled, app.css .chip[aria-pressed="true"]) */
+.wl-tchip { gap: 6px; padding: 0 12px 0 9px; font-size: 0.95rem; color: var(--ink); max-width: 100%; }
+.wl-tchip-name { min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.wl-tchip-n { color: var(--ink-3); font-size: 0.88rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wl-tick { width: 1.2em; height: 1.2em; color: var(--ink-3); }
+.wl-tick-mark { stroke-width: 2.6; }
+.wl-tchip.is-some { border-color: var(--shu); border-style: dashed; }
+.wl-tchip.is-some .wl-tick, .wl-tchip.is-all .wl-tick { color: var(--shu); }
+.wl-tchip.is-all .wl-tick-box { fill: currentColor; }
+.wl-tchip.is-all .wl-tick-mark { stroke: var(--card); }
+.wl-tchip.is-some .wl-tchip-n, .wl-tchip.is-all .wl-tchip-n { color: var(--shu-ink); }
 .wl-count { color: var(--ink-3); font-size: 0.88rem; margin-top: -6px; }
 
 .wl-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
@@ -244,6 +267,8 @@
 .ws-col { display: grid; gap: 16px; min-width: 0; }
 .ws-sec { display: grid; gap: 12px; }
 .ws-sec .seg-field { margin-bottom: 4px; }
+.ws-seltags { margin-top: -6px; color: var(--ink-2); font-size: 0.9rem; line-height: 1.5; overflow-wrap: anywhere; }
+.ws-seltags-k { color: var(--ink-3); }
 .ws-modes { display: grid; gap: 8px; }
 .ws-mode {
   appearance: none; cursor: pointer; text-align: left; color: var(--ink);

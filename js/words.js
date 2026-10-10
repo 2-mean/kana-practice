@@ -45,6 +45,12 @@
  *     (テスト ← てすと / テスト, アメリカ人 ← あめりか人); handwritten cells hold the chosen form and each is judged against
  *     that form's character, so テスト drawn in 히라가나 cells is ✕ — the result says the cells were written in katakana
  *     and names 「표기대로」 (scriptSlip), it never regrades them.
+ *   - 단어 선택 (list): 전체 선택 / 지금 목록 선택 (while a search · 보기 · 태그 filter is on) / 태그로 선택 chips (☐ none ·
+ *     ⊟ some '6/21' · ☑ all, aria-pressed false | mixed | true) add to the selection and never replace it; a group already
+ *     wholly selected is taken out instead (전체 해제 / 지금 목록 해제 / the chip again). The 태그 <select> only filters
+ *     (「태그로 거르기」). 지금 목록 shows only while the filter leaves some words out; 선택 해제 hides while 전체 해제 shows.
+ *     The selection is remembered in this browser (prefs 'words-sel', unknown ids dropped on load, words added later
+ *     never come back selected); 연습 설정 names the tags it spans. Tags sort with numbers in order (1과 · 2과 · 10과).
  *
  * Node: require('./js/words.js')._pure — the DOM-free logic, tested by tools/test-words.js. */
 (function (root, factory) {
@@ -234,7 +240,8 @@
       if (!e) continue;
       if (e.tag) m.set(e.tag, (m.get(e.tag) || 0) + 1); else none++;
     }
-    const tags = Array.from(m, ([tag, n]) => ({ tag, n })).sort((a, b) => a.tag.localeCompare(b.tag, 'ko'));
+    // numbers in their own order: 1과 · 2과 · … · 10과 (not 10과 before 2과)
+    const tags = Array.from(m, ([tag, n]) => ({ tag, n })).sort((a, b) => a.tag.localeCompare(b.tag, 'ko', { numeric: true }));
     return { tags, none };
   }
 
@@ -886,6 +893,108 @@
     return t.tags.some((x) => x.tag === tag) ? tag : '';
   }
 
+  /* ------------------------------------------------------------------ 단어 선택 (전체 · 지금 목록 · 태그로 선택) */
+
+  const liveEntries = (list) => (list || []).filter((e) => e && !e.deleted);
+  const tagKeyOf = (e) => (e && e.tag) || NO_TAG;
+
+  // How much of a group of ids is selected: 'none' | 'some' | 'all' (an empty group is 'none').
+  function groupState(ids, selected) {
+    const l = ids || [];
+    let n = 0;
+    for (const id of l) if (selected && selected.has(id)) n++;
+    return !l.length || !n ? 'none' : n === l.length ? 'all' : 'some';
+  }
+  // A copy of the selection with every id added / removed (the selection is never replaced).
+  function selectIds(selected, ids) { const s = new Set(selected || []); for (const id of ids || []) s.add(id); return s; }
+  function deselectIds(selected, ids) { const s = new Set(selected || []); for (const id of ids || []) s.delete(id); return s; }
+  // 전체 선택 · 지금 목록 선택 · a tag chip: the whole group selected → it leaves the selection, else all of it joins.
+  function toggleIds(selected, ids) { return groupState(ids, selected) === 'all' ? deselectIds(selected, ids) : selectIds(selected, ids); }
+  // The ids of a tag's words (NO_TAG or '': the untagged ones).
+  const idsOfTag = (list, tag) => liveEntries(list).filter((e) => tagKeyOf(e) === (tag || NO_TAG)).map((e) => e.id);
+  const toggleTag = (list, selected, tag) => toggleIds(selected, idsOfTag(list, tag));
+  // The selection without ids the word book no longer has (deleted words, another device's removals).
+  function pruneSelection(selected, list) {
+    return new Set(liveEntries(list).map((e) => e.id).filter((id) => selected && selected.has(id)));
+  }
+
+  /* 태그로 선택 chips: one per tag (tagsOf order), then 태그 없음 when some words have no tag; none at all when no word
+   * has a tag (a lone 태그 없음 chip would only repeat 전체 선택). → [{ tag (NO_TAG = 태그 없음), name, n, sel, state }] */
+  function tagSelection(list, selected) {
+    const l = liveEntries(list);
+    const t = tagsOf(l);
+    if (!t.tags.length) return [];
+    const selN = new Map();
+    for (const e of l) {
+      if (!selected || !selected.has(e.id)) continue;
+      const k = tagKeyOf(e);
+      selN.set(k, (selN.get(k) || 0) + 1);
+    }
+    const out = t.tags.map((x) => ({ tag: x.tag, name: x.tag, n: x.n }));
+    if (t.none) out.push({ tag: NO_TAG, name: '태그 없음', n: t.none });
+    return out.map((c) => {
+      const sel = selN.get(c.tag) || 0;
+      return Object.assign(c, { sel, state: !sel ? 'none' : sel === c.n ? 'all' : 'some' });
+    });
+  }
+
+  // A chip's count ('21', partly selected '6/21') and accessible name ('지시어 21개 중 6개 선택됨').
+  function tagChipText(c) {
+    const count = c.state === 'some' ? `${c.sel}/${c.n}` : String(c.n);
+    const aria = c.state === 'all' ? `${c.name} ${c.n}개 모두 선택됨`
+      : c.state === 'some' ? `${c.name} ${c.n}개 중 ${c.sel}개 선택됨` : `${c.name} ${c.n}개, 선택 안 됨`;
+    return { count, aria };
+  }
+
+  // 연습 설정: the tags the selection spans, most selected first — '시간·숫자 40 · 지시어 21' (a tag only partly selected:
+  // '지시어 6/21'; untagged words: '태그 없음 3'); past max tags ' 외 3개 태그'. '' when nothing is selected or no word
+  // has a tag.
+  function selectionTagsLine(list, selected, max) {
+    const chips = tagSelection(list, selected).filter((c) => c.sel);
+    if (!chips.length) return '';
+    chips.sort((a, b) => b.sel - a.sel || (a.tag === NO_TAG) - (b.tag === NO_TAG) || a.name.localeCompare(b.name, 'ko', { numeric: true }));
+    const m = max || 4;
+    const shown = chips.slice(0, m).map((c) => `${c.name} ${tagChipText(c).count}`).join(' · ');
+    return shown + (chips.length > m ? ` 외 ${chips.length - m}개 태그` : '');
+  }
+
+  /* The selection as remembered in this browser (KanaApp.setPrefs('words-sel'); the app keeps ≤ 8 KB of JSON per name):
+   * the selected ids space-separated in list order { ids } (every word selected too: words added later must not come
+   * back selected). A big selection that does not fit: { all: true } or the words left out { except }, both with the
+   * newest createdAt then { at } — a word created after that was not in the selection. Nothing fits (thousands of
+   * words, about half selected) → { ids: '', over: true }: the selection then lasts for this visit only. */
+  const SEL_BUDGET = 7000;
+  const createdOf = (e) => (typeof e.createdAt === 'number' && isFinite(e.createdAt) ? e.createdAt : 0);
+  function selectionPref(selected, list, budget) {
+    const b = budget || SEL_BUDGET;
+    const live = liveEntries(list).filter((e) => typeof e.id === 'string' && /^\S+$/.test(e.id));
+    const ids = live.map((e) => e.id);
+    const inc = ids.filter((id) => selected && selected.has(id));
+    const s = inc.join(' ');
+    if (s.length <= b) return { v: 1, ids: s };
+    const at = live.reduce((m, e) => Math.max(m, createdOf(e)), 0);
+    if (inc.length === ids.length) return { v: 1, all: true, at };
+    const exc = ids.filter((id) => !selected.has(id)).join(' ');
+    if (exc.length <= b) return { v: 1, except: exc, at };
+    return { v: 1, ids: '', over: true };
+  }
+  // The remembered selection against the word book now (ids it no longer has are dropped; with { all } / { except },
+  // words created after { at } are not selected). → Set
+  function selectionFromPref(pref, list) {
+    const p = pref && typeof pref === 'object' ? pref : {};
+    const live = liveEntries(list);
+    const ids = live.map((e) => e.id);
+    const split = (v) => (typeof v === 'string' ? v.split(/\s+/) : Array.isArray(v) ? v : []).filter((x) => typeof x === 'string' && x);
+    const known = typeof p.at === 'number' && isFinite(p.at) ? live.filter((e) => createdOf(e) <= p.at).map((e) => e.id) : ids;
+    if (p.all === true) return new Set(known);
+    if (typeof p.except === 'string' || Array.isArray(p.except)) {
+      const ex = new Set(split(p.except));
+      return new Set(known.filter((id) => !ex.has(id)));
+    }
+    const want = new Set(split(p.ids));
+    return new Set(ids.filter((id) => want.has(id)));
+  }
+
   /* ------------------------------------------------------------------ presets (KANA_WORD_PRESETS, SPEC-words K) */
 
   // How many of a preset's words the list already has (same id, or same kana + kanji — what importJSON matches).
@@ -941,6 +1050,8 @@
     checkTypedReading, furigana, liveRomaji, toggleMark, toggleSmall, insertText, backspaceText, modifyBefore,
     showsReading, cellsFor, cellTarget, scriptOf, summarize, retryIds, badCharKind, kanaFieldError, kanjiFieldError,
     compactText, readingSample, splitJa, effectiveTag,
+    groupState, selectIds, deselectIds, toggleIds, idsOfTag, toggleTag, pruneSelection, tagSelection, tagChipText,
+    selectionTagsLine, selectionPref, selectionFromPref,
     FORMS, formPrefKey, readingsOf, hiraganaOf, answerForms, defaultForm, resolveForm, formReadings, readingGroups,
     bestReading, furiganaAll, readingsLine, foldKana, romajiToKanaAll, presetStatus, importPresetWords, presetMessage, altsFieldParse,
     scriptSlip, scriptSlipNote, readingGroupLabel,
@@ -1003,6 +1114,7 @@
     back: 'M15 5.5 8.5 12l6.5 6.5',
     keypad: 'M4 6h16v12H4zM7 9h1M10.5 9h1M14 9h1M17 9h0M7 12h1M10.5 12h1M14 12h1M8 15h8',
     play: 'M8 5.5v13l10.5-6.5z',
+    chev: 'M6.5 9.5 12 15l5.5-5.5',
   };
   function icon(name) {
     const svg = sv('svg', { class: 'ic', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' });
@@ -1080,6 +1192,7 @@
     try { return root.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
   }
   const narrow = () => { try { return root.matchMedia('(max-width: 899px)').matches; } catch (e) { return false; } };
+  const phone = () => { try { return root.matchMedia('(max-width: 599px)').matches; } catch (e) { return false; } };
 
   /* =================================================================== module state */
 
@@ -1088,6 +1201,8 @@
     view: 'list', mounted: false, main: null,
     query: '', kind: 'all', tag: '', limit: LIST_PAGE,
     selected: new Set(),
+    selLoaded: false,     // S.selected restored from this browser's prefs (words-sel)
+    tagsOpen: null,       // 태그로 선택 shown (null = by screen width: closed on phones)
     run: null, lastRun: null,
     cleanups: [],
     syncLine: null, renderList: null,
@@ -1101,6 +1216,29 @@
   const prefs = () => normalizePrefs(App.getPrefs ? App.getPrefs('words') : null);
   function savePrefs(p) { if (App.setPrefs) App.setPrefs('words', normalizePrefs(p)); }
   const toast = (m) => { if (App && App.toast) App.toast(m); };
+
+  /* The word selection (S.selected) is remembered in this browser under its own prefs name (selectionPref: it can grow
+   * past what the practice prefs should risk) with the 태그로 선택 open state. Restored once there are words to match
+   * the ids against (a first cloud snapshot may come later); nothing is saved before that, so the stored selection is
+   * not overwritten by an empty one. */
+  const SEL_PREF = 'words-sel';
+  function loadSel() {
+    if (S.selLoaded || !Store) return;
+    const list = words();
+    if (!list.length) return;
+    let p = null;
+    try { p = App.getPrefs ? App.getPrefs(SEL_PREF) : null; } catch (e) { p = null; }
+    S.selected = selectionFromPref(p, list);
+    if (p && typeof p.open === 'boolean') S.tagsOpen = p.open;
+    S.selLoaded = true;
+  }
+  function saveSel() {
+    if (!S.selLoaded || !App || !App.setPrefs) return;
+    const v = selectionPref(S.selected, words());
+    if (typeof S.tagsOpen === 'boolean') v.open = S.tagsOpen;
+    try { App.setPrefs(SEL_PREF, v); } catch (e) { /* not saved: kept for this visit */ }
+  }
+  function setSelected(next) { S.selected = next; saveSel(); }
 
   // js/kanji-data.js on first need (StrokeView / GridPad guides / ui.judgeDetail pick KANJI_DATA up once loaded).
   function ensureKanji() {
@@ -1135,6 +1273,7 @@
     S.renderList = null;
     S.updateSel = null;
     if (view !== 'edit') S.editDirty = false;
+    loadSel();
     if (!Store) {
       main.appendChild(h('div', { class: 'wl-page' }, h('h1', { class: 'page-title' }, '단어장'),
         h('p', { class: 'note-warn' }, '단어장 저장소(js/store.js)를 불러오지 못했어요. 페이지를 새로 고쳐 주세요.')));
@@ -1239,7 +1378,15 @@
     const toolbar = h('div', { class: 'wl-tools card' },
       h('div', { class: 'wl-search' }, h('label', { for: 'wl-search', class: 'sr-only' }, '단어 찾기'), search),
       h('div', { class: 'wl-filters' }, kindSeg, tagBox));
-    const selBar = h('div', { class: 'wl-selbar', role: 'region', 'aria-label': '선택한 단어' });
+    // 단어 선택: the count (+ 선택한 것만 연습 · 선택 해제), 전체 / 지금 목록 선택, 태그로 선택 chips. The count line stays in
+    // place (a live region); the controls around it are rebuilt on every change.
+    const selStatus = h('p', { class: 'wl-selstatus', 'aria-live': 'polite' });
+    const selActs = h('div', { class: 'wl-selacts' });
+    const selBulk = h('div', { class: 'wl-selbulk' });
+    const tagSelId = uid('wl-tagsel');
+    const tagSel = h('div', { class: 'wl-tagsel', id: tagSelId, role: 'group', 'aria-label': '태그로 선택', hidden: true });
+    const selBar = h('div', { class: 'wl-selbar', role: 'region', 'aria-label': '단어 선택' },
+      h('div', { class: 'wl-selhead' }, selStatus, selActs), selBulk, tagSel);
     const count = h('p', { class: 'wl-count', 'aria-live': 'polite' });
     const listEl = h('ul', { class: 'wl-list' });
     const more = h('div', { class: 'wl-more' });
@@ -1267,29 +1414,90 @@
         t.tags.map((x) => h('option', { value: x.tag }, `${x.tag} (${x.n})`)),
         t.none ? h('option', { value: NO_TAG }, `태그 없음 (${t.none})`) : null);
       sel.value = S.tag;
-      tagBox.appendChild(h('label', { for: id, class: 'field-label' }, '태그'));
+      tagBox.appendChild(h('label', { for: id, class: 'field-label' }, '태그로 거르기'));
       tagBox.appendChild(sel);
     }
 
-    let lastVisible = [];
-    function renderSelBar(visible) {
+    // ☐ / ⊟ / ☑ — a tag chip's state in form, not only in colour
+    function tickBox(state) {
+      const svg = sv('svg', { class: 'ic wl-tick', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' });
+      svg.appendChild(sv('rect', { x: 4, y: 4, width: 16, height: 16, rx: 3.5, class: 'wl-tick-box' }));
+      if (state === 'some') svg.appendChild(sv('path', { d: 'M8.5 12h7', class: 'wl-tick-mark' }));
+      if (state === 'all') svg.appendChild(sv('path', { d: 'M8 12.4l2.8 2.8L16.2 9.2', class: 'wl-tick-mark' }));
+      return svg;
+    }
+
+    let lastVisible = [], lastFiltered = false, statusKey = '';
+    function renderSelBar(visible, filtered) {
       lastVisible = visible;
-      selBar.textContent = '';
-      selBar.classList.remove('has-sel');
+      lastFiltered = filtered;
+      const list = words();
       // drop selections of deleted words
-      const ids = new Set(words().map((e) => e.id));
-      for (const id of Array.from(S.selected)) if (!ids.has(id)) S.selected.delete(id);
+      const kept = pruneSelection(S.selected, list);
+      if (kept.size !== S.selected.size) setSelected(kept);
       const n = S.selected.size;
-      selBar.hidden = false;
-      if (!n) {
-        selBar.appendChild(h('p', { class: 'wl-selhint' }, '체크한 단어만 골라서 연습할 수도 있어요.'));
-        if (visible.length) selBar.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-quiet', on: { click: () => { visible.forEach((e) => S.selected.add(e.id)); renderList(); } } }, `지금 목록 모두 선택 (${visible.length})`));
-        return;
+      // the bar is rebuilt: the keyboard focus comes back to the same control (or 전체 선택 when it is gone)
+      const a = document.activeElement;
+      const fk = a && selBar.contains(a) ? a.getAttribute('data-k') : null;
+      const sb = (k, cls, label, onClick, extra) => h('button', Object.assign({ type: 'button', class: 'btn btn-sm ' + (cls || ''), 'data-k': k, on: { click: onClick } }, extra || {}), label);
+      const change = (next) => { setSelected(next); renderList(); };
+
+      selBar.classList.toggle('has-sel', n > 0);
+      const key = n ? 'n' + n : 'none';
+      if (key !== statusKey) {         // same text: leave the live region alone (no repeated announcement)
+        statusKey = key;
+        selStatus.textContent = '';
+        if (n) add(selStatus, [h('b', null, String(n)), '개 선택했어요']);
+        else add(selStatus, h('span', { class: 'wl-selhint' }, '체크한 단어만 골라서 연습할 수도 있어요.'));
       }
-      selBar.classList.add('has-sel');
-      selBar.appendChild(h('p', { class: 'wl-selcount' }, h('b', null, String(n)), '개 선택했어요'));
-      selBar.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-primary', on: { click: () => App.go('words', { view: 'setup', source: 'selected' }) } }, icon('pen'), '선택한 것만 연습'));
-      selBar.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-quiet', on: { click: () => { S.selected.clear(); renderList(); } } }, '선택 해제'));
+      const allIds = list.map((e) => e.id);
+      const allSel = groupState(allIds, S.selected) === 'all';
+      selActs.textContent = '';
+      if (n) {
+        selActs.appendChild(sb('sel-practice', 'btn-primary', [icon('pen'), '선택한 것만 연습'], () => App.go('words', { view: 'setup', source: 'selected' })));
+        // everything selected: 전체 해제 below does the same, no second button for it
+        if (!allSel) selActs.appendChild(sb('sel-clear', 'btn-quiet', '선택 해제', () => change(new Set())));
+      }
+
+      selBulk.textContent = '';
+      selBulk.appendChild(allSel
+        ? sb('sel-all', '', '전체 해제', () => change(new Set()))
+        : sb('sel-all', '', `전체 선택 (${allIds.length})`, () => change(selectIds(S.selected, allIds))));
+      // 지금 목록 only when it is not the whole word book (then it would repeat 전체 선택)
+      if (filtered && visible.length && visible.length < allIds.length) {
+        const visIds = visible.map((e) => e.id);
+        selBulk.appendChild(groupState(visIds, S.selected) === 'all'
+          ? sb('sel-visible', '', '지금 목록 해제', () => change(deselectIds(S.selected, visIds)))
+          : sb('sel-visible', '', `지금 목록 선택 (${visIds.length})`, () => change(selectIds(S.selected, visIds))));
+      }
+
+      const chips = tagSelection(list, S.selected);
+      tagSel.textContent = '';
+      const open = chips.length > 0 && (typeof S.tagsOpen === 'boolean' ? S.tagsOpen : !phone());
+      tagSel.hidden = !open;
+      if (chips.length) {
+        selBulk.appendChild(sb('sel-tags', 'btn-quiet wl-tagsel-toggle', ['태그로 선택', icon('chev')], () => {
+          S.tagsOpen = !open;
+          saveSel();
+          renderSelBar(lastVisible, lastFiltered);
+        }, { 'aria-expanded': open ? 'true' : 'false', 'aria-controls': tagSelId }));
+      }
+      if (open) {
+        tagSel.appendChild(h('p', { class: 'wl-tagsel-hint' }, '태그를 누르면 그 단어들이 선택에 더해져요. 모두 선택된 태그를 다시 누르면 빠져요.'));
+        tagSel.appendChild(h('div', { class: 'wl-tchips' }, chips.map((c) => {
+          const tx = tagChipText(c);
+          return h('button', {
+            type: 'button', class: 'chip wl-tchip is-' + c.state, 'data-k': c.tag === NO_TAG ? 'tag-none' : 'tag:' + c.tag,
+            'aria-pressed': c.state === 'all' ? 'true' : c.state === 'some' ? 'mixed' : 'false', 'aria-label': tx.aria,
+            on: { click: () => change(toggleTag(words(), S.selected, c.tag)) },
+          }, tickBox(c.state), h('span', { class: 'wl-tchip-name' }, c.name), h('span', { class: 'wl-tchip-n' }, tx.count));
+        })));
+      }
+      if (fk) {
+        const all = Array.from(selBar.querySelectorAll('[data-k]'));
+        const byK = (k) => all.find((el) => el.getAttribute('data-k') === k);
+        focusEl(byK(fk) || byK('sel-all') || all[0]);
+      }
     }
 
     function renderList() {
@@ -1297,9 +1505,11 @@
       if (!list.length) { go('list'); return; }
       renderTags(list);
       const visible = filterEntries(list, { query: S.query, kind: S.kind, tag: S.tag });
-      renderSelBar(visible);
-      const filtered = S.query || S.kind !== 'all' || S.tag;
-      count.textContent = filtered ? `${list.length}개 중 ${visible.length}개` : `모두 ${list.length}개`;
+      const filtered = !!(S.query || S.kind !== 'all' || S.tag);
+      renderSelBar(visible, filtered);
+      // a live region: written only when the text changes (a tag chip re-renders the list, not this count)
+      const countText = filtered ? `${list.length}개 중 ${visible.length}개` : `모두 ${list.length}개`;
+      if (count.textContent !== countText) count.textContent = countText;
       listEl.textContent = '';
       let paren = false;
       visible.slice(0, S.limit).forEach((e) => {
@@ -1315,7 +1525,7 @@
       }
     }
     S.renderList = renderList;
-    S.updateSel = () => renderSelBar(lastVisible);
+    S.updateSel = () => renderSelBar(lastVisible, lastFiltered);
     renderList();
   };
 
@@ -1401,6 +1611,7 @@
       type: 'checkbox', class: 'wl-cb', id: cbId, checked: checked ? true : null,
       on: { change: (ev) => {
         if (ev.target.checked) S.selected.add(e.id); else S.selected.delete(e.id);
+        saveSel();
         const li = ev.target.closest('.wl-row');
         if (li) li.classList.toggle('is-sel', ev.target.checked);
         if (S.updateSel) S.updateSel();
@@ -1439,7 +1650,7 @@
     }).then((yes) => {
       if (!yes) return;
       Store.words.remove(e.id);
-      S.selected.delete(e.id);
+      if (S.selected.delete(e.id)) saveSel();
       toast('지웠어요.');
       if (after) after(); else if (S.renderList) S.renderList();
     });
@@ -1968,12 +2179,15 @@
       }, h('span', { class: 'ws-mode-glyph jp', lang: 'ja', 'aria-hidden': 'true' }, glyph),
       h('span', { class: 'ws-mode-text' }, h('span', { class: 'ws-mode-title' }, title), h('span', { class: 'ws-mode-desc' }, disabled && hint ? hint : desc)));
 
+      // which tags the selection spans: '시간·숫자 40 · 지시어 21'
+      const selTags = src.selected.length ? selectionTagsLine(src.all, new Set(src.selected.map((e) => e.id))) : '';
       const target = h('section', { class: 'card ws-sec', 'aria-labelledby': 'ws-src-h' },
         h('h2', { class: 'card-h', id: 'ws-src-h' }, '연습할 단어'),
         src.selected.length ? segmented('wsrc', { sr: '연습할 단어 범위' }, [
           { value: 'selected', label: `선택한 단어 (${src.selected.length})` },
           { value: 'list', label: (src.filtered ? '지금 목록' : '단어장 전체') + ` (${src.listed.length})` },
         ], src.useSel ? 'selected' : 'list', (v) => set('source', v)) : h('p', { class: 'sec-note' }, src.filtered ? `단어장에서 지금 보이는 목록 (${src.listed.length}개)` : `단어장 전체 (${src.listed.length}개)`),
+        selTags ? h('p', { class: 'ws-seltags' }, h('span', { class: 'ws-seltags-k' }, '선택한 단어의 태그:'), ' ', selTags) : null,
         segmented('wkinds', '종류', [{ value: 'both', label: '둘 다' }, { value: 'word', label: '단어만' }, { value: 'sentence', label: '문장만' }], pr.kinds, (v) => set('kinds', v)));
 
       const modes = h('section', { class: 'card ws-sec', 'aria-labelledby': 'ws-mode-h' },
