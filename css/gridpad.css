@@ -1,0 +1,158 @@
+/* 원고지 writing pad (js/gridpad.js). Colours are the tokens of css/app.css (light + dark); the red-pen
+ * marks reuse app.css's .mk, the controls its .btn / .chip / .switch. Load after app.css. */
+
+.gp {
+  --pad-ink: var(--ink);
+  --gp-cell: 96px;            /* set by gridpad.js from the container width (64–132 px) */
+  display: grid; gap: 10px; justify-items: center;
+  grid-template-columns: minmax(0, 1fr); /* the strip's max-content width must not widen the page */
+  width: 100%; min-width: 0;
+}
+
+/* ------------------------------------------------------------------ cells (shared by grid + single) */
+
+.gp-face {
+  position: relative; flex: none;
+  touch-action: none;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.gp-lines { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+.gp-cross {
+  fill: none; stroke: var(--guide); stroke-width: 1; stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.gp-ghost {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-family: var(--font-kana); font-weight: 400; line-height: 1;
+  font-size: calc(var(--gp-face, var(--gp-cell)) * 0.76);
+  color: var(--ghost-strong); pointer-events: none;
+}
+.gp-ghost:empty { display: none; }
+.gp-ghost-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.gp-ghost-stroke { fill: none; stroke: var(--ghost-strong); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+.gp-canvas {
+  position: absolute; left: 0; top: 0; display: block;
+  touch-action: none; cursor: crosshair;
+}
+/* Red-pen mark over the whole cell, the way a teacher circles or strikes an answer. Blended so the
+ * learner's ink stays readable underneath (multiply on paper, screen on the dark theme). */
+.gp-mark { position: absolute; inset: 5%; pointer-events: none; mix-blend-mode: multiply; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .gp-mark { mix-blend-mode: screen; } }
+:root[data-theme="dark"] .gp-mark { mix-blend-mode: screen; }
+.gp-mark:empty { display: none; }
+.gp-mark .mk { width: 100%; height: 100%; }
+.gp-mark .mk path { stroke-width: 2.8; }
+.gp-mark .mk-n path { stroke: var(--ink-3); }   /* neutral "not graded" dash */
+.gp-hit {
+  position: absolute; inset: 0; z-index: 1;
+  appearance: none; margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: transparent; color: inherit; cursor: pointer; touch-action: manipulation;
+}
+.gp-hit:hover { box-shadow: inset 0 0 0 2px var(--line-strong); }
+.gp-hit:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+
+/* ------------------------------------------------------------------ grid mode: 원고지 rows */
+
+.gp-sheet {
+  display: grid; gap: 12px;              /* the row gaps are not drawing surface: a finger there scrolls */
+  justify-content: center; justify-items: start;
+  max-width: 100%;
+}
+/* Pen seen with pen-only on: fingers are ignored anyway, and a pen starting in a gap must write, not scroll. */
+.gp.gp-pen:not(.is-disabled) .gp-sheet { touch-action: none; }
+.gp-row {
+  display: flex;
+  border: 2px solid var(--guide-strong); /* ROW_BORDER in gridpad.js */
+  border-radius: 3px;
+  background: var(--box);
+  box-shadow: var(--shadow);
+  touch-action: none; overscroll-behavior: contain;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.gp-cell { width: var(--gp-cell); height: var(--gp-cell); }
+.gp-row > * + * { box-shadow: inset 1px 0 0 var(--guide-strong); }
+.gp-space {
+  flex: none; width: calc(var(--gp-cell) * 0.4); height: var(--gp-cell);
+  background: repeating-linear-gradient(135deg, var(--ghost-strong) 0 1.5px, transparent 1.5px 7px), var(--card-2);
+  touch-action: none;
+}
+
+/* ------------------------------------------------------------------ single mode: one big cell + strip */
+
+.gp-single { display: grid; gap: 10px; justify-items: center; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; }
+.gp-stage {
+  display: grid; gap: 8px;
+  width: min(100%, 30rem, max(15rem, calc(100vh - 24rem)));
+}
+@supports (height: 100svh) {
+  .gp-stage { width: min(100%, 30rem, max(15rem, calc(100svh - 24rem))); }
+}
+.gp-big {
+  width: 100%; aspect-ratio: 1 / 1;
+  background: var(--box); border-radius: 6px;
+  box-shadow: inset 0 0 0 2px var(--guide-strong), var(--shadow);
+  overscroll-behavior: contain;
+}
+.gp-big .gp-hit { border-radius: 6px; }
+.gp-big .gp-mark .mk path { stroke-width: 1.8; } /* about the app's large mark weight, not 3× it */
+.gp-adv {
+  position: absolute; left: 8px; right: 8px; bottom: 6px; height: 3px; border-radius: 2px;
+  background: var(--shu); opacity: 0; transform: scaleX(0); transform-origin: left center;
+  pointer-events: none;
+}
+.gp-big.is-advancing .gp-adv { opacity: 0.8; animation: gp-adv linear forwards; }
+@keyframes gp-adv { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.gp-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.gp-nav .btn { min-width: 44px; }
+.gp-pos { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+@media (max-width: 359px) {
+  .gp-nav .btn { padding: 0; width: 44px; }
+  .gp-nav-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+.gp-strip {
+  position: relative;               /* offsetLeft of the minis is measured against the strip */
+  display: flex; align-items: center;
+  width: max-content; max-width: 100%;
+  overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin;
+  padding: 3px;
+}
+.gp-mini {
+  appearance: none; position: relative; flex: none;
+  width: 44px; height: 44px; margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: var(--box); color: inherit; cursor: pointer; touch-action: manipulation;
+  box-shadow: inset 0 0 0 1px var(--guide-strong);
+}
+.gp-mini + .gp-mini { margin-left: -1px; }
+.gp-mini[aria-current="true"] { z-index: 1; box-shadow: inset 0 0 0 2.5px var(--shu); }
+.gp-mini:focus-visible { z-index: 2; }
+.gp-mini-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.gp-mini-svg .gp-cross { stroke-dasharray: 2 2; }
+.gp-mini-ink path { fill: none; stroke: var(--ink); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+.gp-mini-ink circle { fill: var(--ink); }
+.gp-mini .gp-mark { inset: 2px; }
+.gp-mini .gp-mark .mk path { stroke-width: 5.5; }
+.gp-mini-gap {
+  flex: none; width: 18px; height: 44px;
+  background: repeating-linear-gradient(135deg, var(--ghost-strong) 0 1.5px, transparent 1.5px 6px), var(--card-2);
+}
+
+/* ------------------------------------------------------------------ bar: auto-advance + view switch */
+
+.gp-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; width: 100%; }
+.gp-bar-gap { flex: 1; }
+.gp-modes { display: inline-flex; gap: 6px; }
+.gp-mode { min-height: 40px; font-size: 0.9rem; }
+@media (pointer: coarse) { .gp-mode { min-height: 44px; } }
+
+/* ------------------------------------------------------------------ states */
+
+/* After grading the cells stop being a drawing surface: the page scrolls over them and taps open results. */
+.gp.is-disabled .gp-face,
+.gp.is-disabled .gp-row,
+.gp.is-disabled .gp-space,
+.gp.is-disabled .gp-canvas { touch-action: manipulation; }
+.gp.is-disabled .gp-canvas { cursor: default; }
+.gp.is-disabled .gp-row, .gp.is-disabled .gp-big { opacity: 0.96; }

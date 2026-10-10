@@ -1,0 +1,445 @@
+/* 내 단어장 (js/words.js) — list, add/edit form, 가져오기·내보내기, practice setup, practice, results.
+ * Only the tokens of css/app.css (light + dark); reuses app.css components (.card .btn .chip .seg .switch .mchip
+ * .test-bar .answer-input .fb .wres .qitem …) and css/gridpad.css. Tablet first; works down to 360 px. */
+
+/* ------------------------------------------------------------------ shared bits */
+
+.w-input {
+  width: 100%; min-width: 0; min-height: 48px; padding: 0 14px;
+  font: inherit; font-size: 1.1rem; color: var(--ink);
+  background: var(--box); border: 2px solid var(--line-strong); border-radius: 12px;
+}
+.w-input::placeholder { color: var(--ink-3); font-size: 0.95rem; }
+.w-input:focus { border-color: var(--ink-2); }
+.w-input.is-bad { border-color: var(--ng); }
+.w-input.jp { font-family: var(--font-kana); font-size: 1.3rem; }
+.w-textarea { min-height: 0; padding: 10px 14px; line-height: 1.5; resize: vertical; font-size: 1rem; }
+.w-select {
+  min-height: 44px; padding: 0 12px; max-width: 100%;
+  font: inherit; color: var(--ink); background: var(--card);
+  border: 1.5px solid var(--line-strong); border-radius: 12px;
+}
+
+.wtype {
+  display: inline-flex; align-items: center; padding: 0.05em 0.55em; border-radius: 6px;
+  font-size: 0.78rem; line-height: 1.5; white-space: nowrap;
+  color: var(--ink-2); background: var(--card-2); border: 1px solid var(--line-strong);
+}
+.wtype-sentence { color: var(--kata); background: var(--kata-bg); border-color: var(--kata-line); }
+
+.mchip-na { color: var(--ink-3); background: var(--card-2); border-color: var(--line-strong); }
+
+/* kana / kanji with furigana */
+.wface { font-family: var(--font-kana); line-height: 1.25; overflow-wrap: anywhere; }
+.wface ruby { ruby-position: over; }
+.wface rt { font-size: 0.45em; color: var(--ink-3); letter-spacing: 0.02em; font-family: var(--font-kana); }
+
+.wf-back { margin: -6px 0 6px -8px; }
+
+/* sync status (KanaStore.status()) */
+.w-sync { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 0.88rem; color: var(--ink-3); }
+.w-sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.w-sync[data-state="on"] { color: var(--ok); }
+.w-sync[data-state="on"] .w-sync-dot { background: var(--ok); }
+.w-sync[data-state="connecting"] .w-sync-dot { background: var(--tri); }
+.w-sync[data-state="error"] .w-sync-dot, .w-sync[data-state="memory"] .w-sync-dot { background: var(--ng); }
+.w-sync[data-state="memory"] { color: var(--ng); }
+
+/* ------------------------------------------------------------------ list */
+
+.wl-page { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+.wl-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; margin-bottom: 4px; }
+.wl-head-text { min-width: 0; }
+.wl-head-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.wl-tools { display: grid; gap: 12px; padding: 14px 16px; }
+.wl-search .w-input { min-height: 46px; }
+.wl-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 18px; }
+.wl-kind { margin: 0; }
+@media (max-width: 479px) {
+  .wl-kind .seg { gap: 4px; }
+  .wl-kind .seg-face { padding: 0 11px; }
+}
+.wl-tagbox { display: grid; gap: 0; min-width: 0; }
+.wl-tagbox:empty { display: none; }
+.wl-tagbox .field-label { margin-bottom: 8px; }
+
+.wl-selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 44px; }
+.wl-selbar.has-sel {
+  padding: 6px 8px 6px 14px; border-radius: var(--radius-sm);
+  background: var(--shu-soft); border: 1px solid var(--shu);
+}
+.wl-selhint { color: var(--ink-3); font-size: 0.88rem; }
+.wl-selcount { margin-right: auto; }
+.wl-selcount b { font-size: 1.1rem; margin-right: 2px; }
+.wl-count { color: var(--ink-3); font-size: 0.88rem; margin-top: -6px; }
+
+.wl-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wl-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 4px 12px;
+  padding: 12px 12px 12px 6px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.wl-row.is-sel { border-color: var(--shu); box-shadow: inset 3px 0 0 var(--shu); }
+.wl-check { display: grid; place-items: center; width: 44px; height: 44px; cursor: pointer; }
+.wl-cb { width: 22px; height: 22px; margin: 0; accent-color: var(--shu); cursor: pointer; }
+.wl-main { display: grid; gap: 3px; min-width: 0; padding-top: 4px; }
+.wl-word { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.wl-word .wface { font-size: 1.85rem; color: var(--ink); }
+.wl-word .wface.is-sentence { font-size: 1.35rem; }
+.wl-word .wface-kanji { line-height: 1.6; }
+.wl-read { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--ink-2); font-size: 0.95rem; }
+.wl-ko { color: var(--ink-3); }
+.wl-mean { font-size: 1.02rem; }
+.wl-mean.is-empty { color: var(--ink-3); font-size: 0.9rem; }
+.wl-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.85rem; color: var(--ink-3); }
+.wl-tag { color: var(--hira); }
+.wl-note { overflow-wrap: anywhere; }
+.wl-side { display: grid; gap: 6px; justify-items: end; align-content: start; }
+.wl-marks { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.wl-marks-none { color: var(--ink-3); font-size: 0.85rem; padding-top: 4px; }
+.wl-acts { display: flex; gap: 2px; }
+.wl-del:hover { color: var(--ng); }
+.wl-none { color: var(--ink-3); padding: 18px 6px; }
+.wl-more { display: flex; justify-content: center; }
+.wl-more:empty { display: none; }
+.wl-legend { color: var(--ink-3); font-size: 0.85rem; line-height: 1.5; }
+.wl-legend[hidden] { display: none; }
+@media (max-width: 599px) {
+  .wl-row { grid-template-columns: auto minmax(0, 1fr); }
+  .wl-side { grid-column: 2; justify-items: start; grid-template-columns: minmax(0, 1fr) auto; align-items: center; width: 100%; }
+  .wl-marks { justify-content: flex-start; }
+  .wl-act-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .wl-acts .btn { width: 44px; padding: 0; }
+  .wl-head-acts { width: 100%; }
+}
+
+.wl-empty { display: grid; gap: 12px; justify-items: start; max-width: 46rem; }
+.wl-empty p { color: var(--ink-2); line-height: 1.65; }
+.wl-empty-glyph { font-size: 2.6rem; color: var(--shu); letter-spacing: 0.12em; line-height: 1.1; }
+.wl-empty-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.wl-empty .wl-empty-note { font-size: 0.86rem; color: var(--ink-3); }
+.wl-empty-sub { font-family: var(--font-head); font-size: 1.05rem; color: var(--ink); margin-top: 6px; }
+
+/* 단어 목록 불러오기 (KANA_WORD_PRESETS, SPEC-words K) — empty state and 가져오기·내보내기 */
+.wpre { display: grid; gap: 8px; width: 100%; }
+.wl-empty .wpre .wpre-lead { color: var(--ink-2); }
+.wpre-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wpre-item {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--card-2);
+}
+.wpre-text { display: grid; gap: 2px; min-width: 0; }
+.wl-empty .wpre-text p { line-height: 1.45; }
+.wpre-title { color: var(--ink); overflow-wrap: anywhere; }
+.wpre-count { color: var(--ink-2); }
+.wl-empty .wpre-desc, .wpre-desc { color: var(--ink-3); font-size: 0.88rem; overflow-wrap: anywhere; }
+.wpre-status { color: var(--ok); font-size: 0.86rem; }
+.wpre-status:empty { display: none; }
+.wpre-acts { display: flex; gap: 8px; }
+.wpre-msg { grid-column: 1 / -1; font-size: 0.92rem; color: var(--ink-2); }
+.wpre-msg.is-ok { color: var(--ok); }
+.wpre-msg:empty { display: none; }
+@media (max-width: 479px) {
+  .wpre-item { grid-template-columns: minmax(0, 1fr); }
+  .wpre-acts .btn { width: 100%; justify-content: center; }
+}
+.wio-presets { margin-bottom: 16px; }
+
+/* several readings (何 なに / なん) */
+.wface-alts { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 2px; }
+.wface-sep, .wr-sep { color: var(--ink-3); }
+
+/* ------------------------------------------------------------------ add / edit form */
+
+.wf-page { max-width: 46rem; }
+.wf { display: grid; gap: 18px; }
+.wf-field { display: grid; gap: 6px; min-width: 0; }
+.wf-label { font-weight: 400; color: var(--ink); font-size: 1rem; }
+.wf-req { color: var(--shu-ink); font-size: 0.85rem; }
+.field-help { color: var(--ink-3); font-size: 0.86rem; line-height: 1.5; }
+.wf-err { color: var(--ng); font-size: 0.92rem; }
+.wf-err:empty { display: none; }
+.wf-bad b { font-family: var(--font-kana); font-size: 1.1em; padding: 0 2px; border-bottom: 2px solid var(--ng); }
+.wf-hint { color: var(--ink-2); font-size: 0.88rem; }
+.wf-preview { color: var(--ink-2); font-size: 0.95rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 4px; }
+.wf-preview:empty { display: none; }
+.wf-prev-label { color: var(--ink-3); font-size: 0.86rem; }
+.wf-ko { color: var(--ink-2); }
+.wf-cells { color: var(--ink-3); font-size: 0.86rem; }
+.wf-ruby { font-size: 1.6rem; color: var(--ink); line-height: 1.7; }
+.wf-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.wf-chips:empty { display: none; }
+.wf-chip { padding: 0.08em 0.6em; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line-strong); font-size: 0.9rem; }
+.wf-chip.is-main { border-color: var(--ink-2); }
+.wf-note-warn { color: var(--tri); font-size: 0.9rem; }
+.wf-note-warn:empty { display: none; }
+.wf-row2 { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 640px) { .wf-row2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); align-items: start; } }
+.wf-type .seg-field { margin: 0; }
+.wf-more { margin-top: 0; }
+.wf-more[open] { display: grid; gap: 14px; }
+.wf-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px; border-top: 1px dashed var(--line-strong); padding-top: 14px; }
+.wf-gap { flex: 1; }
+@media (max-width: 479px) {
+  .wf-actions .btn-primary { flex: 1 1 100%; order: 9; }
+}
+
+/* ------------------------------------------------------------------ kana input (키보드 · 로마자 → 가나 · 가나 키패드) */
+
+.ki { display: grid; gap: 8px; min-width: 0; }
+.ki-input { min-height: 54px; letter-spacing: 0.03em; }
+.ki-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.ki-modes, .ki-script { display: flex; flex-wrap: wrap; gap: 6px; }
+.ki-mode, .ki-scr { min-height: 40px; font-size: 0.92rem; padding: 0 12px; }
+.ki-scr .jp { font-size: 1rem; }
+@media (pointer: coarse) { .ki-mode, .ki-scr { min-height: 44px; } }
+.ki-help { color: var(--ink-3); font-size: 0.85rem; line-height: 1.5; }
+.ki-pad {
+  display: grid; gap: 8px; padding: 10px; border-radius: var(--radius-sm);
+  background: var(--card-2); border: 1px solid var(--line);
+  user-select: none; -webkit-user-select: none;
+}
+.ki-pad.is-off { opacity: 0.5; }
+.ki-blocks { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 640px) { .ki-blocks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ki-block { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+.ki-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.ki-small .ki-key { flex: 1 0 40px; }
+.ki-mods .ki-key { flex: 1 0 44px; }
+.ki-key {
+  appearance: none; min-height: 44px; min-width: 0; padding: 0 4px;
+  display: grid; place-items: center;
+  font-family: var(--font-kana); font-size: 1.3rem; line-height: 1; color: var(--ink);
+  background: var(--box); border: 1px solid var(--line-strong); border-radius: 8px;
+  cursor: pointer; touch-action: manipulation;
+}
+.ki-key:hover { border-color: var(--ink-3); }
+.ki-key:active { background: var(--ghost); }
+.ki-key.is-small { font-size: 1.05rem; }
+.ki-key.is-mod { color: var(--shu-ink); background: var(--shu-soft); border-color: var(--guide); }
+.ki-key.is-space { font-family: var(--font-ui); font-size: 0.88rem; flex: 2 0 88px; color: var(--ink-2); }
+.ki-key.is-back { font-family: var(--font-ui); font-size: 1.2rem; color: var(--ink-2); }
+.ki-key[disabled] { cursor: not-allowed; }
+.ki-gap { min-height: 44px; }
+.ki-pad.is-compact .ki-key { min-height: 44px; font-size: 1.2rem; }
+
+/* ------------------------------------------------------------------ 가져오기 · 내보내기 */
+
+.wio-page { display: grid; gap: 4px; }
+.wio-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 880px) { .wio-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; } }
+.wio-sec { display: grid; gap: 10px; }
+.wio-ta { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.82rem; line-height: 1.45; min-height: 10rem; }
+.wio-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.wio-msg { color: var(--ink-2); font-size: 0.92rem; display: grid; gap: 4px; }
+.wio-msg:empty { display: none; }
+.wio-msg .is-ok { color: var(--ok); }
+.wio-errs { margin: 0; padding-left: 1.2em; color: var(--ng); font-size: 0.88rem; }
+
+/* ------------------------------------------------------------------ practice setup */
+
+.ws-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 880px) { .ws-grid { grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); align-items: start; } }
+.ws-col { display: grid; gap: 16px; min-width: 0; }
+.ws-sec { display: grid; gap: 12px; }
+.ws-sec .seg-field { margin-bottom: 4px; }
+.ws-modes { display: grid; gap: 8px; }
+.ws-mode {
+  appearance: none; cursor: pointer; text-align: left; color: var(--ink);
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px;
+  min-height: 64px; padding: 10px 14px;
+  background: var(--card); border: 1.5px solid var(--line-strong); border-radius: var(--radius);
+  touch-action: manipulation;
+}
+.ws-mode:hover { border-color: var(--ink-3); background: var(--card-2); }
+.ws-mode.is-on { border-color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); background: var(--card-2); }
+.ws-mode[disabled] { cursor: not-allowed; opacity: 0.6; }
+.ws-mode-glyph {
+  display: grid; place-items: center; width: 46px; height: 46px; border-radius: 10px;
+  font-size: 1.6rem; color: var(--shu); background: var(--shu-soft); border: 1.5px solid var(--guide);
+}
+.ws-mode.is-on .ws-mode-glyph { color: var(--card); background: var(--ink); border-color: var(--ink); }
+.ws-mode-text { display: grid; gap: 2px; min-width: 0; }
+.ws-mode-title { font-family: var(--font-head); font-weight: 700; font-size: 1.08rem; }
+.ws-mode-desc { color: var(--ink-2); font-size: 0.88rem; line-height: 1.45; }
+.ws-hint { margin-top: -8px; }
+.ws-go { display: grid; gap: 12px; }
+.ws-summary { color: var(--ink-2); }
+.ws-start { width: 100%; }
+.seg-opt.is-disabled .seg-face { opacity: 0.45; cursor: not-allowed; }
+
+/* ------------------------------------------------------------------ practice: 단어 읽기 */
+
+.wp-qcard { justify-items: stretch; }
+.wp-text-box {
+  display: grid; place-items: center; min-height: 9rem; padding: 12px 8px;
+  background: var(--box); border: 2px solid var(--guide-strong); border-radius: 6px;
+}
+.wp-text { font-size: clamp(3.2rem, 9vw, 5.2rem); line-height: 1.15; text-align: center; color: var(--ink); overflow-wrap: anywhere; }
+.wp-text.is-long { font-size: clamp(2.2rem, 6.5vw, 3.6rem); }
+.wp-text.is-sentence { font-size: clamp(1.7rem, 4.6vw, 2.5rem); line-height: 1.45; }
+.wp-reveal { border-top: 1px dashed var(--line-strong); padding-top: 10px; }
+.wp-entry { display: grid; gap: 4px; }
+.wp-entry-face { font-size: 1.5rem; }
+.wp-entry-face .wface-kanji { line-height: 1.7; }
+.wp-entry-read { color: var(--ink-2); }
+.wp-entry-mean, .wp-entry-note { display: flex; gap: 8px; align-items: baseline; }
+.wp-entry-note { color: var(--ink-2); font-size: 0.92rem; }
+.wp-k {
+  flex: none; display: inline-block; margin-right: 6px; padding: 0.05em 0.5em; border-radius: 6px;
+  font-size: 0.75rem; color: var(--ink-2); background: var(--card-2); border: 1px solid var(--line-strong); vertical-align: 0.15em;
+}
+
+/* per-mora reading marks */
+.wseg { display: flex; flex-wrap: wrap; gap: 6px 2px; align-items: flex-end; }
+.wseg-s {
+  display: inline-grid; justify-items: center; gap: 1px; min-width: 1.9em; padding: 2px 3px 3px;
+  border-radius: 6px; border-bottom: 3px solid transparent;
+}
+.wseg-k { font-size: 1.5rem; line-height: 1.1; }
+.wseg-r { font-size: 0.78rem; color: var(--ink-3); min-height: 1em; }
+.wseg-s.is-ok { border-bottom-color: var(--ok-line); }
+.wseg-s.is-ng { background: var(--ng-bg); border-bottom-color: var(--ng); }
+.wseg-s.is-ng .wseg-r { color: var(--ng); }
+.wseg-gap { width: 0.8em; }
+
+/* 뜻 맞히기 step */
+.wm {
+  display: grid; gap: 10px; padding: 14px; margin-top: 4px;
+  background: var(--card-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.wm-q { font-size: 1rem; }
+.wm-q b { font-family: var(--font-head); font-weight: 700; font-size: 1.08rem; }
+.wm-choices { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 560px) { .wm-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.wm-choice { justify-content: flex-start; text-align: left; min-height: 52px; gap: 10px; }
+.wm-n {
+  flex: none; display: grid; place-items: center; width: 1.6em; height: 1.6em; border-radius: 50%;
+  font-size: 0.82rem; color: var(--ink-2); background: var(--card-2); border: 1px solid var(--line-strong);
+}
+.wm-choice.is-right { border-color: var(--ok); background: var(--ok-bg); color: var(--ink); opacity: 1; }
+.wm-choice.is-wrong { border-color: var(--ng); background: var(--ng-bg); color: var(--ink); opacity: 1; }
+.wm-out { display: grid; gap: 8px; }
+.wm-out:empty { display: none; }
+.wm-ok { color: var(--ok); }
+.wm-ng { color: var(--ink); }
+.wm-ng b { color: var(--ok); font-weight: 400; }
+.wm-also { color: var(--ink-3); font-size: 0.88rem; }
+.wm-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.wm-help { color: var(--ink-3); font-size: 0.85rem; }
+.wm-override { border-color: var(--ok-line); }
+
+/* ------------------------------------------------------------------ practice: 쓰기 / 한자 읽기 */
+
+.wp-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.wp-prompt { display: grid; gap: 6px; border-top: 6px solid var(--hira); }
+.wp-prompt.is-kanji { border-top-color: var(--shu); }
+.wp-meaning { font-family: var(--font-head); font-weight: 700; font-size: clamp(2rem, 5.5vw, 3rem); line-height: 1.25; overflow-wrap: anywhere; }
+.wp-meaning.is-long { font-size: clamp(1.4rem, 3.8vw, 2rem); }
+.wp-meaning-alt { color: var(--ink-2); }
+.wp-nomean { font-family: var(--font-ui); font-weight: 400; font-size: 1rem; color: var(--ink-3); }
+.wp-say { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.wp-say-romaji { font-size: 1.45rem; letter-spacing: 0.02em; }
+.wp-say-ko { color: var(--ink-2); font-size: 1.2rem; }
+.wp-prompt-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.wp-count { color: var(--ink-3); font-size: 0.92rem; }
+.wp-count:empty { display: none; }
+.wp-hint[disabled] { opacity: 0.55; }
+.wp-hint-tag { color: var(--shu-ink); background: var(--shu-soft); border-color: var(--shu); }
+.prompt-top .wp-hint-tag { margin-left: auto; }
+.prompt-top .wp-hint-tag:not([hidden]) + .cheat-tag { margin-left: 0; }
+.wp-form:empty { display: none; }
+.wp-form-seg { margin: 4px 0 0; }
+.wp-read-hint { color: var(--ink-3); font-size: 0.86rem; margin-top: 2px; }
+.wp-kanji-box { display: grid; place-items: center; padding: 6px 0 2px; }
+.wp-kanji { font-size: clamp(4rem, 13vw, 6.5rem); line-height: 1.1; color: var(--ink); text-align: center; overflow-wrap: anywhere; }
+.wp-kanji.is-long { font-size: clamp(2.6rem, 8vw, 4rem); }
+.wp-sub { color: var(--ink-2); font-size: 0.95rem; }
+
+.wp-answer { display: grid; gap: 10px; justify-items: center; min-width: 0; }
+.wp-pad { width: 100%; min-width: 0; display: grid; gap: 8px; }
+.wp-typed-label { margin-top: 2px; }
+.wp-tools { width: 100%; justify-content: center; }
+.wp-tools:empty { display: none; }
+.wp-go { width: 100%; display: flex; justify-content: center; }
+.wp-go .grade-btn[hidden] { display: none; }
+.wp .practice-note { width: 100%; }
+.wp-meaning-step:empty { display: none; }
+.wp-next { display: flex; justify-content: flex-end; }
+.wp-next-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; width: 100%; }
+@media (max-width: 559px) {
+  .wp-next-row .btn-next { flex: 1 1 100%; }
+}
+
+/* result panel (pen) — .w-result (app.css) brings scroll-margin / :empty; not its grid area */
+.wp-result { grid-area: auto; }
+.wr { display: grid; gap: 12px; min-width: 0; }
+.wp-result.is-stale .wr { opacity: 0.55; }
+.wr-head { display: flex; align-items: center; gap: 14px; }
+.wr-headtext { display: grid; gap: 3px; min-width: 0; }
+.wr-verdict { font-family: var(--font-head); font-weight: 700; font-size: 1.22rem; line-height: 1.35; }
+.wr-o { color: var(--ok); }
+.wr-t { color: var(--tri); }
+.wr-x { color: var(--ng); }
+.wr-- { color: var(--ink-2); }
+.wr-na { display: grid; place-items: center; width: 72px; height: 72px; font-size: 2.6rem; color: var(--ink-3); flex: none; }
+.wr-answer { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 4px; font-size: 1.05rem; }
+.wr-answer .wface { font-size: 1.6rem; }
+.wr-answer .wface-kanji { line-height: 1.7; }
+.wr-alt { color: var(--ink-2); }
+.wr-alt .jp { font-size: 1.2rem; }
+.wr-read { color: var(--ink-2); }
+.wr-note { color: var(--ink-2); font-size: 0.92rem; }
+.wr-strip-label { color: var(--ink-3); font-size: 0.85rem; }
+.wr-typed { display: grid; gap: 12px; }
+/* js/kanji-data.js could not be loaded: nothing graded, 다시 불러와서 채점 / 히라가나로 쓰기 */
+.wr-unloaded { border-left: 4px solid var(--tri); }
+.wr-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 479px) { .wr-acts .btn { flex: 1 1 100%; } }
+
+.wc-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.wc-cell {
+  appearance: none; cursor: pointer; color: var(--ink);
+  display: grid; justify-items: center; align-content: center; gap: 0;
+  width: 56px; min-height: 64px; padding: 4px 2px;
+  background: var(--box); border: 1.5px solid var(--line-strong); border-radius: 8px;
+  touch-action: manipulation;
+}
+.wc-cell:hover { border-color: var(--ink-3); }
+.wc-cell[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); }
+.wc-ch { font-size: 1.6rem; line-height: 1.15; }
+.wc-mark { font-size: 0.85rem; font-weight: 700; line-height: 1.2; }
+.wc-o .wc-mark { color: var(--ok); }
+.wc-t { background: var(--tri-bg); border-color: var(--tri-line); }
+.wc-t .wc-mark { color: var(--tri); }
+.wc-x { background: var(--ng-bg); border-color: var(--ng-line); }
+.wc-x .wc-mark { color: var(--ng); }
+.wc-na .wc-mark { color: var(--ink-3); }
+.wc-detail { display: grid; gap: 8px; min-width: 0; }
+.wc-detail:empty { display: none; }
+.wc-detail-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--ink-2); }
+.wc-detail-h > .jp { font-size: 1.5rem; color: var(--ink); }
+
+/* ------------------------------------------------------------------ results */
+
+/* answers with no gradable cell ('–'): neither right nor wrong */
+.score-tile.tile-na { background: var(--card-2); border-color: var(--line-strong); color: var(--ink-2); grid-template-columns: 1fr; }
+
+.wr-qitem { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.wr-qitem .qi-read { flex: 1 1 8rem; min-width: 0; }
+.wr-qitem .qi-mark { margin-left: auto; }
+.wr-qi-face { font-size: 1.45rem; line-height: 1.2; text-align: left; min-width: 0; overflow-wrap: anywhere; }
+span.wr-qi-face:not(.jp) { font-family: var(--font-head); font-weight: 700; font-size: 1.1rem; }
+.wr-qi-cells { display: inline-flex; flex-wrap: wrap; gap: 2px; }
+.wr-qi-cell { display: inline-grid; place-items: center; min-width: 1.6em; padding: 0 2px; border-radius: 4px; border-bottom: 2px solid transparent; }
+.wr-qi-cell .jp { font-size: 1.1rem; }
+.wr-qi-cell.wc-o { border-bottom-color: var(--ok-line); }
+.wr-qi-cell.wc-t { background: var(--tri-bg); border-bottom-color: var(--tri); }
+.wr-qi-cell.wc-x { background: var(--ng-bg); border-bottom-color: var(--ng); }
+.wr-parts { display: inline-flex; flex-wrap: wrap; gap: 6px; font-size: 0.85rem; color: var(--ink-2); }
+.wr-part { display: inline-flex; align-items: center; gap: 4px; }
+.wr-ovr { color: var(--ink-3); font-size: 0.8rem; }
+.wr-mean-line { color: var(--ink-2); }
+.wr-list .qdetail { justify-items: stretch; }
+.wr-list .qdetail > .wp-entry { padding: 4px 4px 0; }
