@@ -195,6 +195,90 @@
     try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
   }
 
+  /* ================================================================ post-answer scroll (one rule for every screen)
+   * revealBelow(anchor, keep, { instant, keepEnd }) — once an answer is graded: bring the result (anchor) into view
+   * without pushing the control that moves on (keep: 다음 문제 / 다음, or the next step's input — an element, a list
+   * of them, or null) off the screen. Used by every test / practice screen here and in js/words.js
+   * (KanaApp.ui.revealBelow).
+   *   · nothing moves while keep is on screen and the result already shows (its top in view, with a good part of it);
+   *   · when the result and keep fit on screen together, the page scrolls just far enough to show both;
+   *   · otherwise their top goes to the top of the screen, but never so far that keep leaves it — keep wins, and the
+   *     learner scrolls on for the rest of the result. A keep list counts as one block from its first top to its last
+   *     bottom; when even that block is taller than the screen, its top goes to the top of the screen — or, with
+   *     opts.keepEnd (a block that ends with the control that moves on: an answered 뜻 step, then 다음), its bottom
+   *     to the bottom.
+   * So the control that moves on sits ABOVE a result that can grow tall (다음 문제 under the pad, 다음 under the
+   * answer row): a keep below it would push the result's head off the top on a short screen.
+   * The screen is the window below the sticky top bar (inside a dialog: its scroller below the sheet's sticky head)
+   * and above an on-screen keyboard (visualViewport). Parts inside a sticky block (the wide layout's pad column) do
+   * not move with the page, so they are left out. Smooth unless reduced motion is asked for (or the page is hidden);
+   * opts.instant for a pad that is about to take strokes (a stroke begun while the page glides would be bent).
+   * Returns true when it scrolled. */
+  const REVEAL_GAP = 12;
+  function revealBelow(anchor, keep, opts) {
+    const o = opts || {};
+    const shown = (el) => !!(el && el.isConnected && !el.hidden && el.getClientRects().length);
+    const keeps = (Array.isArray(keep) ? keep : [keep]).filter(shown);
+    const first = shown(anchor) ? anchor : keeps[0];
+    if (!first) return false;
+    const scroller = scrollParentOf(first);
+    const stuck = (el) => {
+      for (let x = el; x && x !== scroller && x !== document.body; x = x.parentElement) {
+        if (getComputedStyle(x).position === 'sticky') return true;
+      }
+      return false;
+    };
+    const union = (rects) => rects.reduce((u, r) => (!r ? u : !u ? { top: r.top, bottom: r.bottom }
+      : { top: Math.min(u.top, r.top), bottom: Math.max(u.bottom, r.bottom) }), null);
+    const A = shown(anchor) && !stuck(anchor) ? anchor.getBoundingClientRect() : null;
+    const K = union(keeps.filter((el) => !stuck(el)).map((el) => el.getBoundingClientRect()));
+    const R = union([A, K]);
+    if (!R) return false;
+    // the visible band, in client coordinates
+    let top = 0, bottom = window.innerHeight;
+    const vv = window.visualViewport;
+    if (vv) { top = Math.max(top, vv.offsetTop); bottom = Math.min(bottom, vv.offsetTop + vv.height); }
+    if (scroller) {
+      const sr = scroller.getBoundingClientRect();
+      top = Math.max(top, sr.top + scroller.clientTop);
+      bottom = Math.min(bottom, sr.top + scroller.clientTop + scroller.clientHeight);
+      Array.from(scroller.children).forEach((c) => {
+        if (getComputedStyle(c).position === 'sticky') top = Math.max(top, c.getBoundingClientRect().bottom);
+      });
+    } else {
+      const bar = $('.topbar');
+      if (bar && /^(sticky|fixed)$/.test(getComputedStyle(bar).position)) top = Math.max(top, bar.getBoundingClientRect().bottom);
+    }
+    if (bottom - top < 80) return false;                 // nothing sensible to aim at (tiny or hidden view)
+    const keepIn = !K || (K.top >= top - 1 && K.bottom <= bottom + 1);
+    const showMin = A ? Math.min(A.height, 200, (bottom - top) * 0.4) : 0;
+    const anchorIn = !A || (A.top >= top - 1 && A.top + showMin <= bottom + 1);
+    if (keepIn && anchorIn) return false;
+    const lo = top + REVEAL_GAP, hi = bottom - REVEAL_GAP;
+    let d;
+    if (R.bottom - R.top <= hi - lo) d = R.bottom > hi ? R.bottom - hi : R.top < lo ? R.top - lo : 0;
+    else {
+      d = R.top - lo;
+      // clamp into [K.bottom - hi, K.top - lo]; a K taller than the screen empties that range: its top (or end) wins
+      if (K) d = o.keepEnd ? Math.max(Math.min(d, K.top - lo), K.bottom - hi) : Math.min(Math.max(d, K.bottom - hi), K.top - lo);
+    }
+    const se = scroller || document.scrollingElement || document.documentElement;
+    const from = scroller ? scroller.scrollTop : window.scrollY;
+    const to = Math.max(0, Math.min(from + d, se.scrollHeight - se.clientHeight));
+    if (Math.abs(to - from) < 2) return false;
+    const behavior = o.instant || reduceMotion() || document.hidden ? 'instant' : 'smooth';
+    const target = scroller || window;
+    try { target.scrollTo({ top: to, behavior }); } catch (e) { target.scrollTo(scroller ? scroller.scrollLeft : window.scrollX, to); }
+    return true;
+  }
+  // The nearest ancestor that scrolls vertically (a dialog's panel), or null for the page itself.
+  function scrollParentOf(el) {
+    for (let x = el.parentElement; x && x !== document.body && x !== document.documentElement; x = x.parentElement) {
+      if (/(auto|scroll|overlay)/.test(getComputedStyle(x).overflowY) && x.scrollHeight > x.clientHeight + 1) return x;
+    }
+    return null;
+  }
+
   /* ================================================================ stroke pictures (kana + extras + kanji)
    * StrokeView draws the kana and (newer versions) KANA_DATA.extra. Should it not know a character (an extra
    * such as っ ー 。, or a kanji cell of 단어/문장 쓰기), the same SVG shapes are built here: the static glyph in
@@ -1180,6 +1264,9 @@
       if (t.cur && t.cur.graded) next(); else submit();
     });
 
+    // The action row sits right under the answer row, above the feedback: once graded it holds only 다음, so 다음
+    // stays on screen above the result however tall it gets (look-alike comparison) — as 다음 문제 sits above the
+    // result in the 쓰기 test. Before grading the feedback is empty and nothing changes.
     main.appendChild(h('section', { class: 'test test-read', 'aria-label': '읽기 테스트' },
       bar.el,
       h('div', { class: 'read-layout' },
@@ -1197,8 +1284,8 @@
           h('label', { for: 'answer', class: 'answer-label' }, '발음을 입력하세요'),
           h('p', { class: 'answer-help', id: 'answer-help' }, '로마자로 써도, 한글로 써도 정답으로 인정해요.'),
           h('div', { class: 'answer-row' }, input, submitBtn),
-          feedback,
-          h('div', { class: 'test-actions' }, skipBtn, cheatBtn, nextBtn)))));
+          h('div', { class: 'test-actions' }, skipBtn, cheatBtn, nextBtn),
+          feedback))));
 
     function show() {
       const q = t.questions[t.index];
@@ -1254,6 +1341,7 @@
       const k = D.kana[q.ch];
       const cur = t.cur;
       cur.graded = true;
+      cur.answerY = window.scrollY;
       const answer = { ch: q.ch, mark: correct ? 'o' : 'x', cheat: cur.cheat, input: given, skipped: !!res.skipped, lookalike: res.lookalike || null, readingOf: res.readingOf || [] };
       addAnswer(t, answer);
       Q.recordReading(state.stats, q.ch, { correct, cheat: cur.cheat, confusedWith: res.lookalike ? res.lookalike.ch : null });
@@ -1269,13 +1357,19 @@
       feedback.textContent = '';
       feedback.appendChild(readingFeedback(answer));
       bar.update();
+      // the feedback comes up under 다음, which stays on screen (a look-alike comparison runs on below the fold)
+      revealBelow(feedback, nextBtn);
       try { input.focus({ preventScroll: true }); } catch (e) { input.focus(); }
     }
 
     function next() {
       if (!t.cur.graded) return;
+      const y = t.cur.answerY || 0;
       if (!advance(t)) { finishTest(); return; }
       show();
+      // revealBelow may have scrolled the page: back to where the answer was typed (the next glyph above the input,
+      // the input above an on-screen keyboard that stayed up). At once — this also stops a reveal still gliding.
+      window.scrollTo({ top: y, behavior: 'auto' });
     }
 
     onCleanup(() => { /* nothing persistent */ });
@@ -1360,22 +1454,22 @@
         on: { change: (e) => { state.settings.penOnly = e.target.checked; pad.setPenOnly(e.target.checked); persist(); updatePenHint(); } } }),
       h('span', null, '펜 전용'));
     const penHint = h('span', { class: 'pen-hint' });
-    const skipBtn = h('button', { type: 'button', class: 'btn btn-sm', 'data-act': 'skip', on: { click: () => skip() } }, '모르겠어요');
-    const cheatBtn = h('button', { type: 'button', class: 'btn btn-sm', 'data-act': 'cheat', on: { click: () => openCheat() } }, icon('grid'), '컨닝 (글자표)');
+    const skipBtn = h('button', { type: 'button', class: 'btn', 'data-act': 'skip', on: { click: () => skip() } }, '모르겠어요');
+    const cheatBtn = h('button', { type: 'button', class: 'btn', 'data-act': 'cheat', 'aria-label': '컨닝 (글자표)', on: { click: () => openCheat() } }, icon('grid'), '컨닝');
     const padNext = h('button', { type: 'button', class: 'btn btn-primary btn-lg grade-btn pad-next', hidden: true, on: { click: () => next() } }, '다음 문제', h('kbd', null, 'Enter'), icon('arrow'));
+    // 채점 / 모르겠어요 / 컨닝 — and 다음 문제 once graded — sit above the pad, so they are on screen without scrolling.
+    const actRow = h('div', { class: 'act-row' }, gradeBtn, padNext, skipBtn, cheatBtn);
 
     main.appendChild(h('section', { class: 'test test-write', 'aria-label': '쓰기 테스트' },
       bar.el,
       h('div', { class: 'write-layout' },
         promptCard,
         h('div', { class: 'w-pad' },
+          actRow,
           practiceNote,
           padHost,
           h('div', { class: 'pad-tools' }, undoBtn, clearBtn, counter, h('span', { class: 'pad-tools-gap' }), penToggle),
-          penHint,
-          gradeBtn,
-          padNext,
-          h('div', { class: 'w-actions' }, skipBtn, cheatBtn)),
+          penHint),
         resultBox)));
 
     // Drawing a stroke pulls keyboard focus off the last-clicked control (tool button, 컨닝, pen switch),
@@ -1497,12 +1591,10 @@
       padNext.hidden = true;
       practiceNote.hidden = false;
       resultBox.classList.add('is-stale');
-      const focusTarget = gradeBtn;
-      if (window.matchMedia && window.matchMedia('(max-width: 899px)').matches) {
-        // instant, not smooth: a stroke started while the page is still gliding would be bent by it
-        padHost.scrollIntoView({ behavior: 'auto', block: 'center' });
-      }
-      focusTarget.focus({ preventScroll: true });
+      // back to the pad: all of it on screen, then 채점 above it, as far as they fit (instant: a stroke begun while the
+      // page glides would be bent by it)
+      revealBelow(actRow, [padHost, gradeBtn], { instant: true });
+      gradeBtn.focus({ preventScroll: true });
     }
 
     function next() {
@@ -1527,10 +1619,9 @@
       resultBox.appendChild(panel);
       padNext.hidden = false;
       padNext.firstChild.textContent = nextLabel;
-      const narrow = window.matchMedia && window.matchMedia('(max-width: 899px)').matches;
-      if (narrow) resultBox.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
-      const nb = narrow ? resultBox.querySelector('[data-next]') : padNext;
-      if (nb) nb.focus({ preventScroll: true });
+      // the result comes up under 다음 문제 (right below the pad), which stays on screen
+      revealBelow(resultBox, padNext);
+      padNext.focus({ preventScroll: true });
     }
 
     main._writeApi = {
@@ -2278,12 +2369,12 @@
           extra ? h('p', { class: 'sec-note' }, '칸 전체가 원고지 한 칸이에요. 크기와 위치도 채점해요.') : null,
           h('div', { class: 'practice-grid' },
             h('div', { class: 'practice-left' },
+              h('div', { class: 'act-row' }, practiceGradeBtn),
               practiceHost,
               h('div', { class: 'pad-tools' },
                 h('button', { type: 'button', class: 'btn btn-sm', on: { click: () => practicePad && practicePad.undo() } }, icon('undo'), '되돌리기'),
                 h('button', { type: 'button', class: 'btn btn-sm', on: { click: resetPractice } }, icon('clear'), '지우기'),
-                pcount, h('span', { class: 'pad-tools-gap' }), guideToggle),
-              practiceGradeBtn),
+                pcount, h('span', { class: 'pad-tools-gap' }), guideToggle)),
             practiceOut)),
         kpSec,
         lookGroups.length || sameShape ? h('section', { class: 'detail-sec' },
@@ -2334,10 +2425,17 @@
       practicePad.setEnabled(false);
       practiceGradeBtn.disabled = true;
       practiceOut.textContent = '';
-      practiceOut.appendChild(judgeDetail(result, strokes, {
-        ch, box, compact: true, source: 'practice',
-        actions: [h('button', { type: 'button', class: 'btn btn-sm', on: { click: resetPractice } }, icon('pen'), '다시 쓰기')],
-      }));
+      const again = h('button', { type: 'button', class: 'btn btn-sm', on: { click: () => {
+        resetPractice();
+        // back up to the pad — all of it, 채점 too when it fits (instant: a stroke begun while the sheet glides
+        // would be bent by it); this button is gone with the result, so the focus goes to 채점
+        revealBelow(practiceGradeBtn, [practiceHost, practiceGradeBtn], { instant: true });
+        try { practiceGradeBtn.focus({ preventScroll: true }); } catch (e) { practiceGradeBtn.focus(); }
+      } } }, icon('pen'), '다시 쓰기');
+      practiceOut.appendChild(judgeDetail(result, strokes, { ch, box, compact: true, source: 'practice', actions: [again] }));
+      // the result (below the pad on narrow sheets) comes into view, its verdict first: there is no 다음 here, and
+      // its own 다시 쓰기 sits at its end
+      revealBelow(practiceOut, null);
     }
 
     const closeBtn = d.querySelector('.sheet-close');
@@ -2780,6 +2878,9 @@
    *                                                              kana, extras and kanji once KANJI_DATA is loaded;
    *                                                              draws the result's 구별 포인트 and carries the
    *                                                              '판정이 이상해요' report control ({ report: false } hides it)
+   *   ui.revealBelow(anchor, keep, { instant?, keepEnd? }) → bool  the post-answer scroll: brings the result (anchor)
+   *                                                              into view while keep (다음 문제 / the next step; element
+   *                                                              or list) stays on screen (see revealBelow)
    *   ui.glyph(ch, { strokes, numbers, className })              kana in the textbook face (<span lang="ja">), or with
    *                                                              strokes:true its stroke SVG in a 十 box (real position;
    *                                                              kanji too, from KANJI_DATA)
@@ -2835,6 +2936,7 @@
     ui: {
       resultMark: (mark, o) => markSvg(MARKS[mark] ? mark : 'x', 'mk-' + ((o && o.size) || 'md')),
       judgeDetail: (result, strokes, o) => judgeDetail(result, strokes, o),
+      revealBelow: (anchor, keep, o) => revealBelow(anchor, keep, o),
       glyph(ch, o) {
         const opt = o || {};
         if (opt.strokes) return strokeGlyph(ch, { numbers: !!opt.numbers, label: ch, className: opt.className });

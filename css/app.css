@@ -716,7 +716,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 }
 .prompt-hint-label { color: var(--shu-ink); font-size: 0.82rem; margin-right: 8px; }
 .w-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; width: min(100%, 30rem); }
-.w-actions:not(:has(:not([hidden]))) { display: none; }
+.w-actions:not(:has(> :not([hidden]))) { display: none; }
 
 .pad-host {
   width: min(100%, 30rem, max(15rem, calc(100vh - 31rem)));
@@ -743,6 +743,22 @@ details.more[open] > summary { margin-bottom: 8px; }
 .pen-hint { font-size: 0.85rem; color: var(--kata); min-height: 0; }
 .pen-hint:empty { display: none; }
 .grade-btn { width: min(100%, 30rem); }
+/* 채점 / 모르겠어요 / 컨닝 (다음 문제 once graded) above the writing box: on screen without scrolling. The bottom margin plus
+ * the column gap keeps ≥ 28 px to the box, so the box's pen ring (24 px above it while a pen hovers) never reaches a
+ * button and a stroke begun just above the box writes instead of pressing one. */
+.act-row {
+  display: flex; align-items: stretch; justify-content: center; gap: 8px;
+  width: min(100%, 30rem); margin-bottom: 20px;
+}
+.act-row:not(:has(> :not([hidden]))) { display: none; }
+.act-row .grade-btn { flex: 1 1 auto; width: auto; min-width: 0; }
+.act-row > .btn:not(.grade-btn) { flex: none; min-height: 56px; }
+.practice-left .act-row { width: 100%; }
+.practice-left .practice-grade { flex: 1 1 auto; min-height: 52px; }
+@media (max-width: 559px) {
+  .act-row kbd { display: none; }
+  .act-row > .btn { padding-inline: 12px; }
+}
 .practice-note {
   width: min(100%, 30rem); font-size: 0.92rem; color: var(--tri);
   background: var(--tri-bg); border: 1px solid var(--tri-line); border-radius: 10px; padding: 8px 12px;

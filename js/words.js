@@ -1192,7 +1192,11 @@
   function reduceMotion() {
     try { return root.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
   }
-  const narrow = () => { try { return root.matchMedia('(max-width: 899px)').matches; } catch (e) { return false; } };
+  // The app's post-answer scroll (KanaApp.ui.revealBelow): the result comes into view, keep (다음 문제 / the next
+  // step) stays on screen.
+  function revealBelow(anchor, keep, opts) {
+    try { if (App && App.ui && App.ui.revealBelow) App.ui.revealBelow(anchor, keep, opts); } catch (e) { console.error(e); }
+  }
   const phone = () => { try { return root.matchMedia('(max-width: 599px)').matches; } catch (e) { return false; } };
 
   /* =================================================================== module state */
@@ -2581,6 +2585,7 @@
             onAnswered: (ok, pending) => { showReveal(); if (!pending) finalizeAnswer(run, cur, ok); done(); },
             onOverride: () => { finalizeAnswer(run, cur, true); if (run.updateBar) run.updateBar(); },
           }));
+          revealBelow(feedback, meaningBox);
         }
       } else {
         showReveal();
@@ -2600,6 +2605,9 @@
       nextBtn.hidden = false;
       cheatBtn.hidden = true;
       if (run.updateBar) run.updateBar();
+      // the feedback (and the 뜻 step) in view, 다음 on screen — the revealed entry above may have pushed them down;
+      // on a screen too short for the answered 뜻 step and 다음 together, 다음 and the step's end (its verdict) win
+      revealBelow(feedback, [meaningBox, nextBtn], { keepEnd: true });
       focusEl(nextBtn);
     }
 
@@ -2867,21 +2875,30 @@
     const meaningBox = h('div', { class: 'wp-meaning-step' });
     const nextWrap = h('div', { class: 'wp-next', hidden: true });
     const gradeBtn = h('button', { type: 'button', class: 'btn btn-primary btn-lg grade-btn', on: { click: () => grade() } }, '채점', h('kbd', null, 'Enter'));
-    const skipBtn = h('button', { type: 'button', class: 'btn btn-sm wp-skip', on: { click: () => skip() } }, '모르겠어요');
+    const skipBtn = h('button', { type: 'button', class: 'btn wp-skip' + (typed ? ' btn-sm' : ''), on: { click: () => skip() } }, '모르겠어요');
     const openCheat = cheatOpener(ctx, tag);
     run.openCheat = openCheat;
-    const cheatBtn = h('button', { type: 'button', class: 'btn btn-sm', on: { click: openCheat } }, icon('grid'), '컨닝 (글자표)');
+    const cheatBtn = typed
+      ? h('button', { type: 'button', class: 'btn btn-sm', on: { click: openCheat } }, icon('grid'), '컨닝 (글자표)')
+      : h('button', { type: 'button', class: 'btn', 'aria-label': '컨닝 (글자표)', on: { click: openCheat } }, icon('grid'), '컨닝');
     const practiceNote = h('p', { class: 'practice-note', hidden: true }, '연습 중이에요 — 다시 채점해도 이 문제의 기록은 바뀌지 않아요.');
     const counter = h('span', { class: 'stroke-count', 'aria-live': 'polite' });
     const tools = h('div', { class: 'pad-tools wp-tools' });
     let busy = false;
 
+    // With a pen, 채점 / 모르겠어요 / 컨닝 sit above the 원고지 (on screen without scrolling), and the result panel is tall
+    // (per-cell strip and detail), so the 뜻 step and 다음 문제 come right under the 원고지, above it: they stay on
+    // screen while the result comes up below them (reveal). Typed: the buttons follow the input, and the short result
+    // card comes first, as in 단어 읽기.
+    const actRow = typed ? null : h('div', { class: 'act-row' }, gradeBtn, skipBtn, cheatBtn);
     body.appendChild(h('div', { class: 'wp-layout' },
       prompt,
-      h('div', { class: 'wp-answer' }, practiceNote, pad, tools,
-        h('div', { class: 'wp-go' }, gradeBtn),
-        h('div', { class: 'w-actions' }, skipBtn, cheatBtn)),
-      resultBox, meaningBox, nextWrap));
+      typed
+        ? h('div', { class: 'wp-answer' }, practiceNote, pad, tools,
+          h('div', { class: 'wp-go' }, gradeBtn),
+          h('div', { class: 'w-actions' }, skipBtn, cheatBtn))
+        : h('div', { class: 'wp-answer' }, actRow, practiceNote, pad, tools),
+      typed ? [resultBox, meaningBox, nextWrap] : [meaningBox, nextWrap, resultBox]));
 
     // ---- 답안 형태 (히라가나 / 표기대로 / 한자 섞어) and 읽기 선택 (readings of another length: 四 よん / し)
     // (no glyph from the entry on the options: what is to be written would be shown before it is written; the
@@ -3103,7 +3120,7 @@
             h('p', { class: 'wr-verdict wr--' }, '한자 획 데이터를 불러오지 못해서 한자 칸을 채점할 수 없어요.'),
             note)),
         h('div', { class: 'wr-acts' }, retry, toKana)));
-      if (narrow()) resultBox.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+      revealBelow(resultBox, resultBox.querySelector('.wr-acts'));
     }
 
     function recordGrade(g, cells) {
@@ -3198,7 +3215,7 @@
           onAnswered: (ok, pending) => { if (!pending) finalizeAnswer(run, cur, ok); showNext(); },
           onOverride: () => { finalizeAnswer(run, cur, true); if (run.updateBar) run.updateBar(); },
         }));
-        if (narrow()) meaningBox.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'center' });
+        revealBelow(resultBox, meaningBox);       // the 뜻 step (its input) on screen, the reading's result in view
         return;
       }
       if (!cur.final) finalizeAnswer(run, cur, null);
@@ -3214,6 +3231,9 @@
       // 다시 써보기 (practice only, the recorded grade stays) — after 모르겠어요 too, with the model glyphs shown
       const again = !typed ? h('button', { type: 'button', class: 'btn', on: { click: practiceAgain } }, icon('pen'), '다시 써보기') : null;
       nextWrap.appendChild(h('div', { class: 'wp-next-row' }, again, nextBtn));
+      // the result in view, 다음 문제 (and the answered 뜻 step) on screen; on a screen too short for both, 다음 문제
+      // and the step's end (its verdict) win
+      revealBelow(resultBox, [meaningBox, nextWrap], { keepEnd: true });
       const inMeaning = meaningBox.querySelector('input:not([readonly])');
       if (!inMeaning) focusEl(nextBtn);
     }
@@ -3231,8 +3251,9 @@
       resultBox.classList.add('is-stale');
       nextWrap.hidden = true;
       updateCounter();
-      // instant, not smooth: a stroke started while the page is still gliding would be bent by it
-      if (narrow()) pad.scrollIntoView({ behavior: 'auto', block: 'center' });
+      // back to the 원고지: all of it on screen, then 채점 above it, as far as they fit (instant: a stroke begun while
+      // the page glides would be bent by it)
+      revealBelow(actRow || practiceNote, [pad, gradeBtn], { instant: true });
       focusEl(gradeBtn);
     }
 
@@ -3283,7 +3304,7 @@
       // open the first cell worth a look
       const first = cells.find((c) => c.mark === 'x' || c.mark === 't') || (cur.skipped && !cur.practice ? cells[0] : null);
       if (first) showCell(first.i, true);
-      if (narrow()) resultBox.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+      // no scroll here: showNext / the 뜻 step bring the result into view under 다음 문제 (reveal)
     }
 
     function showCell(i, quiet) {
