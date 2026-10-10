@@ -1,5 +1,10 @@
-# 출처와 라이선스
+# 출처 및 라이선스
 
-- **가나·한자 획 데이터** (`js/kana-data.js`, `js/kanji-data.js`): [KanjiVG](https://kanjivg.tagaini.net) (Ulrich Apel)를 가공한 데이터예요. 원본 라이선스 [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/)을 따르며, 일부 형태(이어 쓰기·떼어 쓰기 등)는 원본을 변형했어요.
-- **상용한자 목록**: [KANJIDIC2](https://www.edrdg.org/wiki/index.php/KANJIDIC_Project) (EDRDG, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/))에서 2,136자 목록만 골라 썼어요.
-- **글꼴**: Google Fonts (Klee One, Noto Sans JP, Gowun Dodum, Gowun Batang — SIL Open Font License).
+- **가나·한자 획 데이터** (`js/kana-data.js`, `js/kanji-data.js`)
+  - [KanjiVG](https://kanjivg.tagaini.net) (Ulrich Apel 외) 가공 데이터
+  - 라이선스: [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) (가공 파일도 동일)
+  - さ·き·そ·ふ·り의 이어 쓰기/떼어 쓰기 형태는 KanjiVG 획을 변형해 생성
+- **상용한자 목록 (2,136자)**
+  - [KANJIDIC2](https://www.edrdg.org/wiki/index.php/KANJIDIC_Project) (EDRDG) 기준 선별
+  - 라이선스: [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+- **글꼴**: Google Fonts (Klee One, Noto Sans JP, Gowun Dodum, Gowun Batang), SIL Open Font License
