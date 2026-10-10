@@ -107,6 +107,7 @@
     answerForm: 'hira', answerFormSentence: 'text', readForm: 'hira', readFormSentence: 'text', source: 'auto',
     inputMode: 'ime', inputScript: 'hira',      // the add/edit form's kana input method (remembered)
     typedMode: 'romaji', typedScript: 'hira',   // the typed answer box of 쓰기 / 한자 읽기 (remembered)
+    padView: 'auto',                            // the 원고지 view the learner last chose: 모든 칸 'grid' / 한 칸씩 'single'
   };
 
   function normalizePrefs(raw) {
@@ -131,6 +132,7 @@
     if (['hira', 'kata'].includes(r.inputScript)) o.inputScript = r.inputScript;
     if (['ime', 'romaji', 'pad'].includes(r.typedMode)) o.typedMode = r.typedMode;
     if (['hira', 'kata'].includes(r.typedScript)) o.typedScript = r.typedScript;
+    if (['auto', 'grid', 'single'].includes(r.padView)) o.padView = r.padView;
     return o;
   }
 
@@ -2798,50 +2800,69 @@
     const hintSteps = [];
     if (!kanjiMode && !showRead) hintSteps.push('romaji');
     if (!typed) hintSteps.push('guide');
-    const hintLabel = (st) => (st === 'romaji' ? '힌트 (발음 보기)' : '힌트 (보고 쓰기)');
     let gp = null, ki = null;
 
-    // ---- prompt card
+    // ---- prompt card: compact, so the 원고지 and its tools stay on the first screen —
+    //   a small line (what to write · N칸 · 단어/문장 · tags), the question (뜻 + 발음, or the kanji), one row of
+    //   controls (답안 형태 / 읽기 선택; 힌트 too when typing), and with a pen 채점 · 모르겠어요 · 힌트 · 컨닝 at the
+    //   card's foot (actRow below; beside the question on a wide card)
     const prompt = h('div', { class: 'card wp-prompt' + (kanjiMode ? ' is-kanji' : '') });
     const readLine = h('p', { class: 'wp-say', hidden: true });
-    const hintText = h('span', null, hintSteps.length ? hintLabel(hintSteps[0]) : '힌트');
-    const hintBtn = h('button', { type: 'button', class: 'btn btn-sm wp-hint', on: { click: () => useHint() } }, icon('bulb'), hintText);
+    // the hint button names what it shows: '힌트' plus '(보고 쓰기)' / '(발음 보기)'. With a pen it is one of the help
+    // buttons in the act row (모르겠어요 · 힌트 · 컨닝), shown as its icon where the row is narrow (css .act-text; the
+    // words stay its accessible name and title); the part in brackets only where there is room (css .wp-hint-what).
+    const hintMain = h('span', null, '힌트');
+    const hintWhat = h('span', { class: 'wp-hint-what' });
+    const hintBtn = h('button', { type: 'button', class: 'btn btn-sm wp-hint', on: { click: () => useHint() } }, icon('bulb'), h('span', { class: 'act-text' }, hintMain, hintWhat));
+    function setHintLabel(main, what) {
+      hintMain.textContent = main;
+      hintWhat.textContent = what ? ' (' + what + ')' : '';
+      hintBtn.title = main + (what ? ' (' + what + ')' : '');
+    }
+    const hintWhatOf = (st) => (st === 'romaji' ? '발음 보기' : '보고 쓰기');
+    setHintLabel('힌트', hintSteps.length ? hintWhatOf(hintSteps[0]) : '');
     const formBox = h('div', { class: 'wp-form' });
     const countNote = h('span', { class: 'wp-count' });
     const promptLabel = h('p', { class: 'prompt-label' });
+    const ctlRow = h('div', { class: 'wp-ctl' }, formBox, hintSteps.length && typed ? hintBtn : null);
+    // the question's parts; the act row (pen) is its sibling — beside it on a wide card, under it on a phone
+    const pmain = h('div', { class: 'prompt-main wp-prompt-main' });
+    prompt.appendChild(pmain);
+    pmain.appendChild(h('div', { class: 'prompt-top wp-meta' }, promptLabel, countNote, typeBadge(entry.type),
+      h('span', { class: 'prompt-tags' }, retryTag(cur.retry), htag, tag)));
     if (kanjiMode) {
       const then = displayMeaning(entry) ? ' 그다음 뜻도 물어봐요.' : '';     // no 뜻 step without a meaning
-      prompt.appendChild(h('div', { class: 'prompt-top' }, promptLabel, typeBadge(entry.type), retryTag(cur.retry), htag, tag));
-      prompt.appendChild(h('div', { class: 'wp-kanji-box' }, jp(entry.kanji, 'wp-kanji' + (Array.from(entry.kanji).length > 4 ? ' is-long' : ''))));
-      prompt.appendChild(h('p', { class: 'wp-sub' }, typed ? '읽기를 히라가나·로마자·한글 중 편한 것으로 입력하세요.' + then : '원고지에 한 칸에 한 글자씩 쓰세요.' + then, countNote));
-      if (hintSteps.length) prompt.appendChild(h('div', { class: 'wp-prompt-foot' }, hintBtn));
-      prompt.appendChild(formBox);
+      const kn = Array.from(entry.kanji).length;
+      const sub = typed ? '읽기를 히라가나·로마자·한글 중 편한 것으로 입력하세요.' + then : then.trim();
+      pmain.appendChild(h('div', { class: 'wp-q wp-kanji-box' },
+        jp(entry.kanji, 'wp-kanji' + (kn > 8 ? ' is-xlong' : kn > 4 ? ' is-long' : '')),
+        sub ? h('p', { class: 'wp-sub' }, sub) : null));
     } else {
-      prompt.appendChild(h('div', { class: 'prompt-top' }, promptLabel, typeBadge(entry.type), retryTag(cur.retry), htag, tag));
-      prompt.appendChild(h('p', { class: 'wp-meaning' + (meanings[0] && meanings[0].length > 12 ? ' is-long' : '') }, meanings[0] || h('span', { class: 'wp-nomean' }, '(뜻이 없는 단어예요 — 발음을 보고 쓰세요)')));
-      if (meanings.length > 1) prompt.appendChild(h('p', { class: 'wp-meaning-alt' }, '또는 ' + meanings.slice(1).join(', ')));
-      prompt.appendChild(readLine);
-      prompt.appendChild(h('div', { class: 'wp-prompt-foot' }, countNote, hintSteps.length ? hintBtn : null));
-      prompt.appendChild(formBox);
+      pmain.appendChild(h('div', { class: 'wp-q' },
+        h('p', { class: 'wp-meaning' + (meanings[0] && meanings[0].length > 12 ? ' is-long' : '') }, meanings[0] || h('span', { class: 'wp-nomean' }, '(뜻이 없는 단어예요 — 발음을 보고 쓰세요)')),
+        meanings.length > 1 ? h('p', { class: 'wp-meaning-alt' }, '또는 ' + meanings.slice(1).join(', ')) : null,
+        readLine));
     }
+    pmain.appendChild(ctlRow);
     // what to write, in the current form: 히라가나로 / 표기대로 (가타카나는 가타카나로) / 한자 섞어서
     function updatePromptLabel() {
       promptLabel.textContent = '';
       // one span: .prompt-label is a flex box, and loose text nodes would become separate items
+      // (the parenthetical drops on a narrow card — css .wp-label-more; the 답안 형태 choice names the form anyway)
+      const kataNote = () => h('span', { class: 'wp-label-more' }, ' (가타카나는 가타카나로)');
       if (kanjiMode) {
-        const what = entry.type === 'sentence' ? '이 문장의 읽기를 ' : '이 한자 단어의 읽기를 ';
-        promptLabel.appendChild(typed ? h('span', null, what + '쓰세요')
-          : cur.form === 'hira' ? h('span', null, what, h('b', null, '히라가나'), '로 쓰세요')
-            : h('span', null, what, h('b', null, '표기대로'), ' 쓰세요 (가타카나는 가타카나로)'));
+        promptLabel.appendChild(typed ? h('span', null, '읽기를 쓰세요')
+          : cur.form === 'hira' ? h('span', null, '읽기를 ', h('b', null, '히라가나'), '로 쓰세요')
+            : h('span', null, '읽기를 ', h('b', null, '표기대로'), ' 쓰세요', kataNote()));
         return;
       }
       if (typed) { promptLabel.appendChild(document.createTextNode('일본어로 쓰세요')); return; }
       promptLabel.appendChild(cur.form === 'hira' ? h('span', null, '일본어를 ', h('b', null, '히라가나'), '로 쓰세요')
-        : cur.form === 'kanji' ? h('span', null, h('b', null, '한자'), '를 섞어서 일본어로 쓰세요')
-          : h('span', null, '일본어로 쓰세요', forms.some((f) => f.form === 'text') ? ' (가타카나는 가타카나로)' : ''));
+        : cur.form === 'kanji' ? h('span', null, h('b', null, '한자'), '를 섞어서 쓰세요')
+          : h('span', null, '일본어로 쓰세요', forms.some((f) => f.form === 'text') ? kataNote() : null));
     }
-    // ' · 3칸' after the 한자 읽기 instruction sentence; a bare '3칸' at the start of the 쓰기 prompt's foot
-    const updateCount = () => { countNote.textContent = typed ? '' : `${kanjiMode ? ' · ' : ''}${curCells().filter((c) => c.kind === 'write').length}칸`; };
+    // '3칸' after the instruction on the card's top line (css .wp-count puts the ' · ' before it)
+    const updateCount = () => { countNote.textContent = typed ? '' : `${curCells().filter((c) => c.kind === 'write').length}칸`; };
     updateCount();
     updatePromptLabel();
     if (showRead) showReading();
@@ -2862,8 +2883,8 @@
       if (step === 'guide' && gp) gp.setGuideText(guideText());
       cur.hintCounts = true;
       htag.hidden = false;
-      if (cur.hint >= hintSteps.length) { hintBtn.disabled = true; hintText.textContent = '힌트를 다 봤어요'; }
-      else hintText.textContent = '힌트 더 보기 (보고 쓰기)';
+      if (cur.hint >= hintSteps.length) { hintBtn.disabled = true; setHintLabel('힌트를 다 봤어요', ''); }
+      else setHintLabel('힌트 더 보기', hintWhatOf(hintSteps[cur.hint]));
       toast(step === 'guide' ? '칸에 흐리게 보이는 글자를 따라 써 보세요. 힌트를 본 문제로 기록돼요.' : '발음을 보여 드려요. 힌트를 본 문제로 기록돼요.');
     }
     const guideOn = () => hintSteps.slice(0, cur.hint).includes('guide');
@@ -2880,24 +2901,27 @@
     run.openCheat = openCheat;
     const cheatBtn = typed
       ? h('button', { type: 'button', class: 'btn btn-sm', on: { click: openCheat } }, icon('grid'), '컨닝 (글자표)')
-      : h('button', { type: 'button', class: 'btn', 'aria-label': '컨닝 (글자표)', on: { click: openCheat } }, icon('grid'), '컨닝');
+      : h('button', { type: 'button', class: 'btn', 'aria-label': '컨닝 (글자표)', title: '컨닝 (글자표)', on: { click: openCheat } }, icon('grid'), h('span', { class: 'act-text' }, '컨닝'));
     const practiceNote = h('p', { class: 'practice-note', hidden: true }, '연습 중이에요 — 다시 채점해도 이 문제의 기록은 바뀌지 않아요.');
     const counter = h('span', { class: 'stroke-count', 'aria-live': 'polite' });
-    const tools = h('div', { class: 'pad-tools wp-tools' });
+    const tools = h('div', { class: 'pad-tools wp-tools pad-tools-top' });
     let busy = false;
 
-    // With a pen, 채점 / 모르겠어요 / 컨닝 sit above the 원고지 (on screen without scrolling), and the result panel is tall
-    // (per-cell strip and detail), so the 뜻 step and 다음 문제 come right under the 원고지, above it: they stay on
-    // screen while the result comes up below them (reveal). Typed: the buttons follow the input, and the short result
-    // card comes first, as in 단어 읽기.
-    const actRow = typed ? null : h('div', { class: 'act-row' }, gradeBtn, skipBtn, cheatBtn);
+    // With a pen, 채점 / 모르겠어요 / 힌트 / 컨닝 sit at the foot of the prompt card and the tools (되돌리기 · 칸 지우기 · 모두
+    // 지우기) right above the 원고지 — with a clear band before its first row (css .pad-tools-top) — so they are on
+    // screen without scrolling however many rows the 원고지 has. The result panel is tall (per-cell strip and detail),
+    // so the 뜻 step and 다음 문제 come right under the 원고지, above it: they stay on screen while the result comes up
+    // below them (reveal). Typed: the buttons follow the input, and the short result card comes first, as in 단어 읽기.
+    const actRow = typed ? null : h('div', { class: 'act-row' }, gradeBtn, skipBtn, hintSteps.length ? hintBtn : null, cheatBtn);
+    if (actRow) prompt.appendChild(actRow);
+    else tools.classList.remove('pad-tools-top');
     body.appendChild(h('div', { class: 'wp-layout' },
       prompt,
       typed
         ? h('div', { class: 'wp-answer' }, practiceNote, pad, tools,
           h('div', { class: 'wp-go' }, gradeBtn),
           h('div', { class: 'w-actions' }, skipBtn, cheatBtn))
-        : h('div', { class: 'wp-answer' }, actRow, practiceNote, pad, tools),
+        : h('div', { class: 'wp-answer' }, practiceNote, tools, pad),
       typed ? [resultBox, meaningBox, nextWrap] : [meaningBox, nextWrap, resultBox]));
 
     // ---- 답안 형태 (히라가나 / 표기대로 / 한자 섞어) and 읽기 선택 (readings of another length: 四 よん / し)
@@ -2972,9 +2996,17 @@
         cells: curCells(), penOnly: settings.penOnly,
         label: kanjiMode ? '읽기를 쓰는 원고지 — 한 칸에 한 글자씩' : '원고지 — 한 칸에 한 글자씩 쓰세요',
         guideText: guideOn() ? guideText() : null,
+        // the view the learner last chose (모든 칸 / 한 칸씩) stays for the next questions and practices
+        mode: pr.padView,
+        // 한 칸씩: the big cell ends on the first screen however tall the question above it is
+        fitScreen: true,
         onChange: (info) => {
           updateCounter();
           if (info && info.reason === 'stroke') pullFocus();
+          if (info && info.reason === 'mode' && info.manual && gp) {
+            const v = gp.getMode();
+            if (pr.padView !== v) { pr.padView = v; savePrefs(Object.assign(prefs(), { padView: v })); }
+          }
         },
         onCellClick: (i) => showCell(i),
       });
@@ -3024,7 +3056,22 @@
     }
 
     if (typed) buildTyped(); else buildPad();
-    run.destroyQuestion = () => { if (gp) { gp.destroy(); gp = null; } };
+    // With a pen the tools stick under the top bar while a long 원고지 is scrolled (css .wp-tools.pad-tools-top), so
+    // 되돌리기 · 모두 지우기 stay on screen with the rows being written; stuck, the strip behind them is solid (.is-stuck).
+    let stuckRaf = 0;
+    const syncStuck = () => {
+      stuckRaf = 0;
+      if (!tools.isConnected || tools.hidden || typed) return;
+      const top = parseFloat(getComputedStyle(tools).top) || 0;
+      tools.classList.toggle('is-stuck', window.scrollY > 0 && tools.getBoundingClientRect().top <= top + 0.5);
+    };
+    const onStuckScroll = () => { if (!stuckRaf) stuckRaf = requestAnimationFrame(syncStuck); };
+    if (!typed) window.addEventListener('scroll', onStuckScroll, { passive: true });
+    run.destroyQuestion = () => {
+      window.removeEventListener('scroll', onStuckScroll, { passive: true });
+      if (stuckRaf) cancelAnimationFrame(stuckRaf);
+      if (gp) { gp.destroy(); gp = null; }
+    };
 
     run.keys = {
       enter: () => { if (!gradeBtn.hidden) grade(); else if (!nextWrap.hidden) ctx.next(); },

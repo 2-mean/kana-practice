@@ -1455,20 +1455,23 @@
       h('span', null, '펜 전용'));
     const penHint = h('span', { class: 'pen-hint' });
     const skipBtn = h('button', { type: 'button', class: 'btn', 'data-act': 'skip', on: { click: () => skip() } }, '모르겠어요');
-    const cheatBtn = h('button', { type: 'button', class: 'btn', 'data-act': 'cheat', 'aria-label': '컨닝 (글자표)', on: { click: () => openCheat() } }, icon('grid'), '컨닝');
+    const cheatBtn = h('button', { type: 'button', class: 'btn', 'data-act': 'cheat', 'aria-label': '컨닝 (글자표)', title: '컨닝 (글자표)', on: { click: () => openCheat() } }, icon('grid'), h('span', { class: 'act-text' }, '컨닝'));
     const padNext = h('button', { type: 'button', class: 'btn btn-primary btn-lg grade-btn pad-next', hidden: true, on: { click: () => next() } }, '다음 문제', h('kbd', null, 'Enter'), icon('arrow'));
-    // 채점 / 모르겠어요 / 컨닝 — and 다음 문제 once graded — sit above the pad, so they are on screen without scrolling.
+    // 채점 / 모르겠어요 / 컨닝 — and 다음 문제 once graded — sit at the foot of the prompt card, and the pad tools right
+    // above the pad (with a clear band before the box, css .pad-tools-top), so the question, its buttons, 되돌리기 /
+    // 지우기 and the whole box are on one screen without scrolling.
     const actRow = h('div', { class: 'act-row' }, gradeBtn, padNext, skipBtn, cheatBtn);
+    const promptMain = h('div', { class: 'prompt-main' });
+    promptCard.append(promptMain, actRow);
 
     main.appendChild(h('section', { class: 'test test-write', 'aria-label': '쓰기 테스트' },
       bar.el,
       h('div', { class: 'write-layout' },
         promptCard,
         h('div', { class: 'w-pad' },
-          actRow,
           practiceNote,
+          h('div', { class: 'pad-tools pad-tools-top' }, undoBtn, clearBtn, counter, h('span', { class: 'pad-tools-gap' }), penToggle),
           padHost,
-          h('div', { class: 'pad-tools' }, undoBtn, clearBtn, counter, h('span', { class: 'pad-tools-gap' }), penToggle),
           penHint),
         resultBox)));
 
@@ -1504,18 +1507,20 @@
       const q = t.questions[t.index];
       const k = D.kana[q.ch];
       t.cur = newCur();
-      promptCard.textContent = '';
+      promptMain.textContent = '';
       promptCard.className = 'prompt card w-prompt s-' + k.script + (t.script === 'mix' ? ' is-mix' : '');
       tag.hidden = true;
       again.hidden = !q.retry;
       const alt = shownAlt(k);
-      add(promptCard, [
+      // one line: 'あ 히라가나로 쓰세요   ka 카' (tags at its end), the hint (if any) under it
+      add(promptMain, [
         h('div', { class: 'prompt-top' },
-          h('p', { class: 'prompt-label' }, badge(k.script, t.script === 'mix' ? 'badge-lg' : ''), h('span', null, '로 쓰세요')), again, tag),
-        h('div', { class: 'prompt-say' },
-          h('p', { class: 'prompt-romaji', lang: 'en' }, k.romaji,
-            alt.length ? h('span', { class: 'prompt-alt' }, ' / ' + alt.slice(0, 2).join(' / ')) : null),
-          h('p', { class: 'prompt-ko' }, k.ko)),
+          h('p', { class: 'prompt-label' }, badge(k.script, t.script === 'mix' ? 'badge-lg' : ''), h('span', null, '로 쓰세요')),
+          h('p', { class: 'prompt-say' },
+            h('span', { class: 'prompt-romaji', lang: 'en' }, k.romaji,
+              alt.length ? h('span', { class: 'prompt-alt' }, ' / ' + alt.slice(0, 2).join(' / ')) : null),
+            h('span', { class: 'prompt-ko' }, k.ko)),
+          h('span', { class: 'prompt-tags' }, again, tag)),
         k.hint ? h('p', { class: 'prompt-hint' }, h('span', { class: 'prompt-hint-label' }, '힌트'), h('span', null, richText(k.hint))) : null]);
       skipBtn.hidden = false;
       cheatBtn.hidden = false;
@@ -2370,11 +2375,12 @@
           h('div', { class: 'practice-grid' },
             h('div', { class: 'practice-left' },
               h('div', { class: 'act-row' }, practiceGradeBtn),
-              practiceHost,
-              h('div', { class: 'pad-tools' },
-                h('button', { type: 'button', class: 'btn btn-sm', on: { click: () => practicePad && practicePad.undo() } }, icon('undo'), '되돌리기'),
-                h('button', { type: 'button', class: 'btn btn-sm', on: { click: resetPractice } }, icon('clear'), '지우기'),
-                pcount, h('span', { class: 'pad-tools-gap' }), guideToggle)),
+              // the tools above the box, as on the 쓰기 test (css .pad-tools-top keeps a clear band before the box)
+              h('div', { class: 'pad-tools pad-tools-top' },
+                h('button', { type: 'button', class: 'btn btn-sm tool-btn', 'aria-label': '되돌리기', title: '되돌리기', on: { click: () => practicePad && practicePad.undo() } }, icon('undo'), h('span', { class: 'tool-text' }, '되돌리기')),
+                h('button', { type: 'button', class: 'btn btn-sm tool-btn', 'aria-label': '지우기', title: '모두 지우기', on: { click: resetPractice } }, icon('clear'), h('span', { class: 'tool-text' }, '지우기')),
+                pcount, h('span', { class: 'pad-tools-gap' }), guideToggle),
+              practiceHost),
             practiceOut)),
         kpSec,
         lookGroups.length || sameShape ? h('section', { class: 'detail-sec' },

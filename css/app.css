@@ -62,7 +62,10 @@
   --radius-sm: 10px;
   --gutter: max(16px, env(safe-area-inset-left));
   --gutter-r: max(16px, env(safe-area-inset-right));
+  --top-clear: 80px;  /* what the sticky top bar covers, plus a little: scroll-margin-top of things scrolled into view */
+  --bar-h: calc(61px + env(safe-area-inset-top));   /* the sticky top bar's height (one row): top of what sticks under it */
 }
+@media (max-width: 559px) { :root { --top-clear: 112px; } }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -288,11 +291,24 @@ kbd {
   .tab { flex: 1; }
   .theme-btn { margin-left: auto; }
 }
+/* During a test or a practice (#main > .test) a phone's top bar is one row — the mark, the tabs, the theme button —
+ * so the question, its buttons and the writing box get the screen (the mark keeps the name as its accessible name). */
+@media (max-width: 559px) {
+  html:has(#main > .test) { --top-clear: 64px; --bar-h: calc(53px + env(safe-area-inset-top)); }
+  html:has(#main > .test) .topbar-in { flex-wrap: nowrap; padding-top: 0; min-height: 52px; gap: 8px; }
+  html:has(#main > .test) .brand { padding-right: 0; flex: none; }
+  html:has(#main > .test) .brand-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  html:has(#main > .test) .tabs { order: 0; flex: 1; width: auto; min-width: 0; gap: 0; }
+  html:has(#main > .test) .tab { min-width: 0; padding: 0 2px; font-size: 0.95rem; white-space: nowrap; }
+  html:has(#main > .test) .theme-btn { margin-left: 0; }
+}
 
 /* ------------------------------------------------------------------ layout */
 
 .main { padding-top: 24px; padding-bottom: 32px; min-height: 60vh; }
 .main:focus { outline: none; }
+.main:has(> .test) { padding-top: 12px; }   /* tests and practice: the question starts higher */
+@media (max-width: 559px) { .main:has(> .test) { padding-top: 10px; } }
 
 .page-head { margin-bottom: 20px; }
 .page-head-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
@@ -566,9 +582,9 @@ details.more[open] > summary { margin-bottom: 8px; }
 
 .test-bar {
   display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px 14px;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
-.tb-mid { display: grid; gap: 4px; min-width: 0; }
+.tb-mid { display: grid; gap: 3px; min-width: 0; line-height: 1.3; }
 .tb-kind { font-size: 0.85rem; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb-progress { display: flex; align-items: center; gap: 10px; }
 .tb-bar { flex: 1; height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
@@ -591,7 +607,7 @@ details.more[open] > summary { margin-bottom: 8px; }
   border: 1px solid var(--shu);
 }
 @media (max-width: 559px) {
-  .test-bar { gap: 8px; margin-bottom: 12px; }
+  .test-bar { gap: 8px; margin-bottom: 8px; }
   .tb-quit { padding-inline: 8px; }
   .tally { gap: 4px; flex-wrap: nowrap; }
   .tally .mchip { min-width: 0; padding: 0.1em 0.45em; font-size: 0.85rem; }
@@ -667,72 +683,84 @@ details.more[open] > summary { margin-bottom: 8px; }
 .la-tip b { color: var(--tri); font-weight: 400; margin-right: 4px; }
 .la-links { display: flex; flex-wrap: wrap; gap: 6px; }
 
-/* writing */
+/* writing — the 쓰기 test, and the pieces 단어장 쓰기 (css/words.css) and 따라 써보기 share. Compact on purpose: the
+ * question, 채점 · 모르겠어요 (the prompt card's foot), the pad tools and the whole box are on one phone screen
+ * (360 × 640 and up) at scroll 0. The chrome is what got smaller, not the box. */
 .write-layout {
-  display: grid; gap: 18px;
+  display: grid; gap: 10px;
   grid-template-areas: "prompt" "pad" "result";
 }
 .w-prompt { grid-area: prompt; }
-.w-pad { grid-area: pad; display: grid; gap: 10px; justify-items: center; }
-.w-result { grid-area: result; min-width: 0; scroll-margin-top: 80px; }
-.pad-host { scroll-margin-top: 80px; }
-@media (max-width: 559px) { .w-result, .pad-host { scroll-margin-top: 112px; } }
+.w-pad { grid-area: pad; display: grid; gap: 8px; justify-items: center; }
+.w-result { grid-area: result; min-width: 0; scroll-margin-top: var(--top-clear); }
+.pad-host { scroll-margin-top: var(--top-clear); }
 .w-result:empty { display: none; }
 @media (min-width: 900px) {
   .write-layout {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas: "prompt pad" "result pad";
-    align-items: start;
+    align-items: start; column-gap: 24px;
   }
   .w-pad { position: sticky; top: 80px; }
 }
-.prompt { display: grid; gap: 6px; border-top: 6px solid var(--line-strong); }
+/* the prompt card: one line ('あ 히라가나로 쓰세요   ka 카', tags at its end), the hint (a few kana) under it, and the
+ * buttons — under the question on a phone, beside it on a wide card (flex-wrap: .prompt-main 18rem + .act-row 22rem) */
+.prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; border-top: 4px solid var(--line-strong); }
+.w-prompt { padding: 10px 14px 12px; }
+@media (max-width: 559px) { .w-prompt { padding: 10px 12px; } }
 .prompt.s-hira { border-top-color: var(--hira); }
 .prompt.s-kata { border-top-color: var(--kata); }
 .prompt.is-mix.s-hira { background: var(--hira-bg); border-color: var(--hira-line); border-top-color: var(--hira); }
 .prompt.is-mix.s-kata { background: var(--kata-bg); border-color: var(--kata-line); border-top-color: var(--kata); }
-.prompt-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.prompt-label { color: var(--ink-2); display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; }
-.prompt-top .cheat-tag { margin-left: auto; }
-.prompt-top .retry-tag { margin-left: auto; }
-.prompt-top .retry-tag:not([hidden]) + .cheat-tag { margin-left: 0; }
-.prompt-romaji { font-size: clamp(3rem, 9vw, 4.6rem); line-height: 1.05; letter-spacing: 0.02em; font-family: var(--font-ui); }
-.prompt-alt { font-size: 0.35em; color: var(--ink-3); letter-spacing: 0; vertical-align: middle; }
-.prompt-ko { font-size: 1.6rem; color: var(--ink-2); line-height: 1.2; }
-.prompt-say { display: grid; gap: 4px; }
-@media (max-width: 899px) {
-  .prompt { gap: 4px; }
-  .prompt-say { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; }
-}
-@media (max-width: 559px) {
-  .badge-lg { font-size: 0.95rem; padding: 0.2em 0.8em 0.2em 0.5em; }
-  .prompt-romaji { font-size: 2.8rem; }
-  .prompt-ko { font-size: 1.35rem; }
-}
+.prompt-main { flex: 1 1 18rem; display: grid; gap: 6px; min-width: 0; }
+.prompt-top { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; min-width: 0; }
+.prompt-label { color: var(--ink-2); display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 0.95rem; }
+.prompt-tags { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+.prompt-tags:not(:has(> :not([hidden]))) { display: none; }
+.prompt-say { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 0 10px; min-width: 0; }
+.prompt-romaji { font-size: clamp(1.75rem, 1.4rem + 1.2vw, 2.25rem); line-height: 1.1; letter-spacing: 0.02em; font-family: var(--font-ui); color: var(--ink); }
+.prompt-alt { font-size: 0.5em; color: var(--ink-3); letter-spacing: 0; vertical-align: middle; }
+.prompt-ko { font-size: 1.25rem; color: var(--ink-2); line-height: 1.2; }
 .prompt-hint {
   display: block; justify-self: start;
-  background: var(--card); border: 1.5px dashed var(--shu); border-radius: 10px;
-  padding: 6px 12px; font-size: 1rem; margin-top: 4px;
+  background: var(--card); border: 1.5px dashed var(--shu); border-radius: 8px;
+  padding: 3px 10px; font-size: 0.9rem; line-height: 1.5;
 }
-.prompt-hint-label { color: var(--shu-ink); font-size: 0.82rem; margin-right: 8px; }
+.prompt-hint-label { color: var(--shu-ink); font-size: 0.8rem; margin-right: 6px; }
+@media (max-width: 559px) {
+  .badge-lg { font-size: 0.92rem; padding: 0.15em 0.75em 0.15em 0.5em; }
+}
 .w-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; width: min(100%, 30rem); }
 .w-actions:not(:has(> :not([hidden]))) { display: none; }
 
-.pad-host {
-  width: min(100%, 30rem, max(15rem, calc(100vh - 31rem)));
-}
+/* The box: as wide as the screen allows, up to 30rem, never under 15rem (18rem on the two-column layout) — the rest of
+ * the screen height minus the chrome above and below it (top bar, test bar, prompt card, tools, the clear band). */
+.w-pad { --pad-w: min(100%, 30rem, max(15rem, calc(100vh - 21rem))); }
 @supports (height: 100svh) {
-  .pad-host { width: min(100%, 30rem, max(15rem, calc(100svh - 31rem))); }
+  .w-pad { --pad-w: min(100%, 30rem, max(15rem, calc(100svh - 21rem))); }
+}
+/* a hint line under the question (を, ぢ …) makes the card about 2.5rem taller */
+@media (max-width: 899px) {
+  .write-layout:has(.prompt-hint) .w-pad { --pad-w: min(100%, 30rem, max(15rem, calc(100vh - 24rem))); }
+  @supports (height: 100svh) { .write-layout:has(.prompt-hint) .w-pad { --pad-w: min(100%, 30rem, max(15rem, calc(100svh - 24rem))); } }
 }
 @media (min-width: 900px) {
-  .pad-host { width: min(30rem, max(18rem, calc(100vh - 19rem))); }
-  @supports (height: 100svh) { .pad-host { width: min(30rem, max(18rem, calc(100svh - 19rem))); } }
+  .w-pad { --pad-w: min(30rem, max(18rem, calc(100vh - 18rem))); }
+  @supports (height: 100svh) { .w-pad { --pad-w: min(30rem, max(18rem, calc(100svh - 18rem))); } }
 }
+.pad-host { width: var(--pad-w); }
 .pad-tools {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
   width: 100%;
 }
-.w-pad .pad-tools { width: min(100%, 30rem); }
+/* the tools row spans the box (a little wider on a small box, so 되돌리기 · 지우기 · 획 수 · 펜 전용 stay on one line) */
+.w-pad .pad-tools { width: min(100%, max(var(--pad-w), 17rem)); }
+/* Tools ABOVE the box (.pad-tools-top): a clear band of 28 px between them and the box — wider than the box's ring, which
+ * reaches 24 px above it while a pen hovers (html.pad-pen-near) — so a stroke begun just above the box writes instead
+ * of pressing a tool, and a tap on a tool is never a stroke. Also out of the writing hand's way (a palm rests below
+ * and beside the pen, not above it). Margin + the column's gap = 28 px. */
+.w-pad > .pad-tools-top { margin-bottom: 20px; }
+.practice-left > .pad-tools-top { margin-bottom: 20px; }
 .pad-tools-gap { flex: 1; }
 @media (max-width: 559px) {
   .tool-btn { width: 44px; padding: 0; }
@@ -743,25 +771,48 @@ details.more[open] > summary { margin-bottom: 8px; }
 .pen-hint { font-size: 0.85rem; color: var(--kata); min-height: 0; }
 .pen-hint:empty { display: none; }
 .grade-btn { width: min(100%, 30rem); }
-/* 채점 / 모르겠어요 / 컨닝 (다음 문제 once graded) above the writing box: on screen without scrolling. The bottom margin plus
- * the column gap keeps ≥ 28 px to the box, so the box's pen ring (24 px above it while a pen hovers) never reaches a
- * button and a stroke begun just above the box writes instead of pressing one. */
+/* 채점 / 모르겠어요 / 컨닝 (다음 문제 once graded) at the foot of the prompt card (beside the question on a wide card):
+ * on screen without scrolling, and well away from the box (the tools row and the clear band are between them).
+ * 46 px tall — a full touch target, not a banner. */
 .act-row {
   display: flex; align-items: stretch; justify-content: center; gap: 8px;
-  width: min(100%, 30rem); margin-bottom: 20px;
+  width: 100%;
 }
 .act-row:not(:has(> :not([hidden]))) { display: none; }
-.act-row .grade-btn { flex: 1 1 auto; width: auto; min-width: 0; }
-.act-row > .btn:not(.grade-btn) { flex: none; min-height: 56px; }
+.prompt > .act-row, .wp-prompt > .act-row { flex: 1 1 22rem; max-width: 30rem; }
+.act-row .grade-btn { flex: 1 1 auto; width: auto; min-width: 0; min-height: 46px; padding: 0.4rem 1rem; font-size: 1.08rem; border-radius: 12px; }
+.act-row > .btn:not(.grade-btn) { flex: none; min-height: 46px; }
 .practice-left .act-row { width: 100%; }
-.practice-left .practice-grade { flex: 1 1 auto; min-height: 52px; }
+.practice-left .practice-grade { flex: 1 1 auto; min-height: 46px; }
 @media (max-width: 559px) {
   .act-row kbd { display: none; }
   .act-row > .btn { padding-inline: 12px; }
 }
+/* The help buttons (힌트, 컨닝) are just their icon where the row is too narrow for their words, so 채점 keeps a wide
+ * target (the words stay their accessible name and title). Measured on the row itself (a size container): it is under
+ * the question on a phone and beside it on a wide card. Without container queries: by the screen width. */
+.act-row .grade-btn { min-width: 5.5rem; }
+.act-row .wp-hint-what { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@supports (container-type: inline-size) {
+  .act-row { container-type: inline-size; }
+  @container (max-width: 21rem) {
+    .act-row .act-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .act-row > .btn:has(> .act-text) { width: 46px; padding: 0; }
+  }
+  @container (max-width: 27rem) {   /* four buttons: 채점 · 모르겠어요 · 힌트 · 컨닝 */
+    .act-row:has(> .wp-hint) .act-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .act-row:has(> .wp-hint) > .btn:has(> .act-text) { width: 46px; padding: 0; }
+  }
+}
+@supports not (container-type: inline-size) {
+  @media (max-width: 559px) {
+    .act-row .act-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .act-row > .btn:has(> .act-text) { width: 46px; padding: 0; }
+  }
+}
 .practice-note {
-  width: min(100%, 30rem); font-size: 0.92rem; color: var(--tri);
-  background: var(--tri-bg); border: 1px solid var(--tri-line); border-radius: 10px; padding: 8px 12px;
+  width: min(100%, 30rem); font-size: 0.88rem; color: var(--tri); line-height: 1.5;
+  background: var(--tri-bg); border: 1px solid var(--tri-line); border-radius: 10px; padding: 5px 10px;
 }
 
 /* the drawing pad */
@@ -789,7 +840,8 @@ details.more[open] > summary { margin-bottom: 8px; }
 .pad.is-disabled { opacity: 0.92; }
 html.pad-drawing, html.pad-drawing * { user-select: none !important; -webkit-user-select: none !important; }
 /* Keeping the page still while writing (js/drawpad.js header). The ring: a stroke begun a few px outside the box
- * writes instead of panning the page (6 px at the bottom: the tools row is 8-10 px below). */
+ * writes instead of panning the page (6 px at the bottom; the tools are above the box, 28 px clear of it —
+ * .pad-tools-top). */
 .pad:not(.is-disabled)::before { content: ""; position: absolute; inset: -12px -12px -6px -12px; }
 .pad.is-disabled, .pad.is-disabled .pad-canvas { touch-action: manipulation; } /* graded: the page scrolls over it */
 /* A pen over the writing block or writing (DrawPad.Ink.nearZone): nothing on the page pans, so the writing hand
@@ -1160,7 +1212,9 @@ dialog::backdrop { background: var(--scrim); }
   .practice-grid { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); align-items: start; }
 }
 .practice-left { display: grid; gap: 8px; }
-.practice-pad { width: 100%; }
+/* as wide as the column, but short enough that 채점, the tools and the whole box fit the sheet together on a phone */
+.practice-pad { width: min(100%, max(15rem, calc(94vh - 17.5rem))); justify-self: center; }
+@supports (height: 100svh) { .practice-pad { width: min(100%, max(15rem, calc(94svh - 17.5rem))); } }
 .practice-grade { width: 100%; }
 .practice-out:empty { display: none; }
 

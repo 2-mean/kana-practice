@@ -75,6 +75,8 @@
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .gp-cell { width: var(--gp-cell); height: var(--gp-cell); }
+/* scrolled into view (모든 칸 / focusCell): below the sticky top bar, not under it */
+.gp-cell, .gp-big { scroll-margin-top: var(--top-clear, 80px); scroll-margin-bottom: 12px; }
 .gp-row > * + * { box-shadow: inset 1px 0 0 var(--guide-strong); }
 .gp-space {
   flex: none; width: calc(var(--gp-cell) * 0.4); height: var(--gp-cell);
@@ -85,13 +87,17 @@
 /* ------------------------------------------------------------------ single mode: one big cell + strip */
 
 .gp-single { display: grid; gap: 10px; justify-items: center; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; }
-.gp-stage {
-  display: grid; gap: 8px;
-  width: min(100%, 30rem, max(15rem, calc(100vh - 24rem)));
-}
+/* The big cell (without fitScreen): the screen height minus 24rem of chrome above it (top bar, test bar, the compact
+ * prompt card, the tools and their clear band — css/words.css, app.css .pad-tools-top), never under 15rem. */
+.gp { --gp-stage-w: min(100%, 30rem, max(15rem, calc(100vh - 24rem))); }
 @supports (height: 100svh) {
-  .gp-stage { width: min(100%, 30rem, max(15rem, calc(100svh - 24rem))); }
+  .gp { --gp-stage-w: min(100%, 30rem, max(15rem, calc(100svh - 24rem))); }
 }
+/* fitScreen (gridpad.js): the big cell ends on the first screen, however tall the page above it is — js sets --gp-fit
+ * (the small viewport's height less the stage's offset from the top of the document) */
+.gp.gp-fit { --gp-stage-w: min(100%, 30rem, max(12rem, var(--gp-fit, 30rem))); }
+.gp-vh { position: fixed; top: 0; left: 0; width: 0; height: 100vh; height: 100svh; visibility: hidden; pointer-events: none; }
+.gp-stage { display: grid; gap: 8px; width: var(--gp-stage-w); }
 .gp-big {
   width: 100%; aspect-ratio: 1 / 1;
   background: var(--box); border-radius: 6px;
@@ -153,7 +159,13 @@ html.pad-pen-near .gp:not(.is-disabled) .gp-big::before { top: -18px; }
 
 .gp-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; width: 100%; }
 .gp-bar-gap { flex: 1; }
-.gp-modes { display: inline-flex; gap: 6px; }
+/* 모든 칸 / 한 칸씩 away from the bottom-right corner, where the writing hand's palm rests (a tap there would switch
+ * the view and drop a stroke in progress): centred under the 원고지, or at the left end of a bar as wide as the big
+ * cell (다 쓰면 다음 칸으로 on its right). */
+.gp-modes { display: inline-flex; gap: 6px; order: -1; }
+.gp.is-grid .gp-bar { justify-content: center; }
+.gp.is-grid .gp-bar-gap { display: none; }
+.gp.is-single .gp-bar { width: var(--gp-stage-w); }
 .gp-mode { min-height: 40px; font-size: 0.9rem; }
 @media (pointer: coarse) { .gp-mode { min-height: 44px; } }
 

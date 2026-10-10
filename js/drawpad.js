@@ -219,24 +219,33 @@
    * first point, each segment a line of half-width 0.5·base·(mean f of its ends) (base = baseWidth of the box's css
    * size). Segments, not points: a quick flick across a corner inks the box between two samples outside it. A stroke
    * begun on the ring around a box that never reaches into it this far — a tap or a flick beside the box — is not a
-   * stroke. */
+   * stroke.
+   * Distances are signed (inside the box: minus how deep the centre line gets), so a line drawn inside the box counts
+   * however thin it is: a light pen (pressure ~0.1–0.3, width factor under 1) in a small box (a 64–132 px 원고지 cell,
+   * base 3–4.5 px) draws a line narrower than 2·INK_MIN, which an unsigned distance of 0 inside rejected on pen-up. */
   const INK_MIN = 1.5;
   function inksBox(P, side, k) {
     if (!P.length) return false;
     const base = baseWidth(side * k);
     const f = (p) => p.f || 1;
-    // distance (units) from point (x, y) to the box, 0 inside
-    const dPt = (x, y) => Math.hypot(Math.max(-x, 0, x - side), Math.max(-y, 0, y - side));
-    // distance (units) from segment a-b to the box: 0 if it crosses the box, else the least of its ends' distances and
-    // the box corners' distances to the segment
+    // signed distance (units) from point (x, y) to the box edge: outside, the distance to the box; inside, minus the
+    // distance to the nearest edge
+    const dPt = (x, y) => {
+      const ox = Math.max(-x, 0, x - side), oy = Math.max(-y, 0, y - side);
+      return ox || oy ? Math.hypot(ox, oy) : -Math.min(x, y, side - x, side - y);
+    };
+    // signed distance (units) from segment a-b to the box: if it enters the box, minus its deepest point's depth (well
+    // enough sampled); else the least of its ends' distances and the box corners' distances to the segment
     function dSeg(a, b) {
       if (Math.max(a.x, b.x) >= 0 && Math.min(a.x, b.x) <= side && Math.max(a.y, b.y) >= 0 && Math.min(a.y, b.y) <= side) {
-        // bounding boxes overlap: does the segment actually cross the box? sample it finely enough
+        // bounding boxes overlap: does the segment actually enter the box, and how deep? sample it finely enough
         const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (side / 64)));
+        let best = Infinity;
         for (let i = 0; i <= n; i++) {
           const t = i / n;
-          if (dPt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t) === 0) return 0;
+          best = Math.min(best, dPt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t));
         }
+        if (best <= 0) return best;
       }
       let d = Math.min(dPt(a.x, a.y), dPt(b.x, b.y));
       const vx = b.x - a.x, vy = b.y - a.y, L2 = vx * vx + vy * vy;

@@ -357,32 +357,86 @@
 
 /* ------------------------------------------------------------------ practice: 쓰기 / 한자 읽기 */
 
-.wp-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
-.wp-prompt { display: grid; gap: 6px; border-top: 6px solid var(--hira); }
+.wp-layout { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+/* The prompt card is small on purpose — the 원고지 and its tools come first on the screen: a top line in small type
+ * (what to write · N칸 · 단어/문장 · tags), the question (the 뜻 at title size with the 발음 inline, or the kanji with
+ * its instruction beside it), one row of controls (답안 형태 · 읽기 선택 · 힌트) and, with a pen, the buttons. */
+.wp-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; border-top: 4px solid var(--hira); padding: 10px 14px 12px; }
+@media (max-width: 559px) { .wp-prompt { padding: 10px 12px; } }
+.wp-prompt-main { gap: 6px; }
 .wp-prompt.is-kanji { border-top-color: var(--shu); }
-.wp-meaning { font-family: var(--font-head); font-weight: 700; font-size: clamp(2rem, 5.5vw, 3rem); line-height: 1.25; overflow-wrap: anywhere; }
-.wp-meaning.is-long { font-size: clamp(1.4rem, 3.8vw, 2rem); }
-.wp-meaning-alt { color: var(--ink-2); }
-.wp-nomean { font-family: var(--font-ui); font-weight: 400; font-size: 1rem; color: var(--ink-3); }
-.wp-say { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
-.wp-say-romaji { font-size: 1.45rem; letter-spacing: 0.02em; }
-.wp-say-ko { color: var(--ink-2); font-size: 1.2rem; }
-.wp-prompt-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
-.wp-count { color: var(--ink-3); font-size: 0.92rem; }
+.wp-meta { font-size: 0.88rem; line-height: 1.4; gap: 2px 8px; }
+.wp-meta .prompt-label { font-size: inherit; }
+.wp-count { color: var(--ink-3); white-space: nowrap; }
+.wp-count::before { content: "·"; margin-right: 8px; }
 .wp-count:empty { display: none; }
+.wp-q { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 12px; min-width: 0; }
+.wp-meaning { font-family: var(--font-head); font-weight: 700; font-size: clamp(1.35rem, 1.15rem + 0.8vw, 1.7rem); line-height: 1.25; overflow-wrap: anywhere; min-width: 0; }
+.wp-meaning.is-long { font-size: clamp(1.15rem, 1.05rem + 0.5vw, 1.35rem); }
+.wp-meaning-alt { color: var(--ink-2); font-size: 0.9rem; }
+.wp-nomean { font-family: var(--font-ui); font-weight: 400; font-size: 0.95rem; color: var(--ink-3); }
+.wp-say { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
+.wp-say-romaji { font-size: 1.05rem; letter-spacing: 0.02em; }
+.wp-say-ko { color: var(--ink-2); font-size: 1rem; }
+.wp-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.wp-ctl:not(:has(> .wp-form:not(:empty):not([hidden]), > .wp-hint:not([hidden]))) { display: none; }
+.wp-ctl .wp-hint { margin-left: auto; padding-inline: 12px; }
 .wp-hint[disabled] { opacity: 0.55; }
+/* '(보고 쓰기)' only where it fits on the row beside the 답안 형태 choice (it stays in the button's accessible name) */
+@media (max-width: 439px) {
+  .wp-hint-what { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
 .wp-hint-tag { color: var(--shu-ink); background: var(--shu-soft); border-color: var(--shu); }
-.prompt-top .wp-hint-tag { margin-left: auto; }
-.prompt-top .wp-hint-tag:not([hidden]) + .cheat-tag { margin-left: 0; }
+.wp-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
 .wp-form:empty { display: none; }
-.wp-form-seg { margin: 4px 0 0; }
-.wp-read-hint { color: var(--ink-3); font-size: 0.86rem; margin-top: 2px; }
-.wp-kanji-box { display: grid; place-items: center; padding: 6px 0 2px; }
-.wp-kanji { font-size: clamp(4rem, 13vw, 6.5rem); line-height: 1.1; color: var(--ink); text-align: center; overflow-wrap: anywhere; }
-.wp-kanji.is-long { font-size: clamp(2.6rem, 8vw, 4rem); }
-.wp-sub { color: var(--ink-2); font-size: 0.95rem; }
+/* 답안 형태 / 읽기 선택: the legend inline before the options (float: not the fieldset's rendered legend, so a flex item) */
+.wp-form-seg { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.wp-form-seg > .field-label { float: left; margin: 0; font-size: 0.8rem; color: var(--ink-3); }
+.wp-form-seg .seg { gap: 4px; }
+.wp-form-seg .seg-face { min-height: 40px; padding: 0 12px; font-size: 0.92rem; border-radius: 10px; }
+@media (pointer: coarse) { .wp-form-seg .seg-face { min-height: 44px; } }
+/* the chosen form: the chip style (not a filled black block next to 채점) */
+.wp-form-seg .seg-opt input:checked + .seg-face { background: var(--shu-soft); border-color: var(--shu); color: var(--ink); box-shadow: inset 0 0 0 1px var(--shu); }
+/* phones: '답안 형태' is read out but not shown — the instruction above names the form, and the row stays one line */
+@media (max-width: 559px) {
+  .wp-form-seg:not(.wp-read-seg) > .field-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+.wp-read-hint { flex-basis: 100%; color: var(--ink-3); font-size: 0.8rem; line-height: 1.45; margin: 0; }
+/* phones: the options say it ('yon · 2칸' / 'shi · 1칸'); the why is read out but not shown */
+@media (max-width: 559px) {
+  .wp-read-hint { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+/* '(가타카나는 가타카나로)' after the instruction: not on a narrow card (the 답안 형태 choice names the form) */
+@media (max-width: 479px) {
+  .wp-label-more { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+/* 한자 읽기: the kanji, its instruction beside it (under it when the kanji is long) */
+.wp-kanji-box { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; min-width: 0; }
+.wp-kanji { font-size: clamp(2.3rem, 1.8rem + 2.2vw, 3.2rem); line-height: 1.15; color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.wp-kanji.is-long { font-size: clamp(1.7rem, 1.4rem + 1.4vw, 2.2rem); }
+.wp-kanji.is-xlong { font-size: clamp(1.3rem, 1.15rem + 0.8vw, 1.7rem); }   /* a sentence: one line on a phone where it fits */
+.wp-sub { flex: 1 1 9rem; color: var(--ink-2); font-size: 0.85rem; line-height: 1.5; min-width: 0; }
 
-.wp-answer { display: grid; gap: 10px; justify-items: center; min-width: 0; }
+.wp-answer { display: grid; gap: 8px; justify-items: center; min-width: 0; }
+/* The tools above the 원고지 (pen) stick under the top bar while a long 원고지 is scrolled, so 되돌리기 · 모두 지우기 stay on
+ * screen with the rows being written. Below them a clear band — the padding plus the column's gap, 24 px: the 원고지's
+ * ring reaches 16–18 px above a row or the big cell while a pen hovers (css/gridpad.css) — so a stroke begun just above
+ * the 원고지 writes instead of pressing a tool. The band is part of the sticky box but lets the pen through
+ * (pointer-events), so a row scrolled up under it is still written in; stuck (js .is-stuck), the strip behind the
+ * buttons is solid. */
+.wp-answer > .pad-tools-top {
+  position: sticky; top: var(--bar-h); z-index: 5;
+  margin-bottom: 0; padding-bottom: 16px;
+  pointer-events: none;
+}
+.wp-answer > .pad-tools-top > * { pointer-events: auto; }
+.wp-answer > .pad-tools-top.is-stuck::before {
+  content: ""; position: absolute; z-index: -1; pointer-events: none;
+  top: 0; bottom: 16px; left: calc(-1 * var(--gutter)); right: calc(-1 * var(--gutter-r));
+  background: var(--paper); box-shadow: 0 1px 0 var(--line);
+}
+/* a cell scrolled into view (모든 칸 / focusCell): below the top bar and the stuck tools */
+.wp-pad .gp-cell { scroll-margin-top: calc(var(--top-clear, 80px) + 4.5rem); }
 .wp-pad { width: 100%; min-width: 0; display: grid; gap: 8px; }
 .wp-typed-label { margin-top: 2px; }
 .wp-tools { width: 100%; justify-content: center; }

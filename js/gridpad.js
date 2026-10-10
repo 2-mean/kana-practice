@@ -11,6 +11,9 @@
  *     onCellClick  fn(i) — while disabled (after grading) the cells become buttons that call it
  *     penZone      the writing block: a pen over it pins the page (default: the host's parent — the 원고지 with its
  *                  tools and buttons; DrawPad.Ink.nearZone, css html.pad-pen-near); null for none
+ *     fitScreen    single mode: the big cell ends on the first screen — its side is at most the small viewport's
+ *                  height (100svh) less its distance from the top of the document, never under 12rem (css --gp-fit);
+ *                  kept while the pad is disabled (graded), so the cell doesn't grow under the result (default false)
  *   gp.el, gp.cellCount
  *   gp.getCellStrokes(i)  → Array<Array<[x, y]>> in CELL coordinates (cell box 0..100, y down). Points of a
  *                           stroke that runs past the cell edge are kept, as in DrawPad.
@@ -23,14 +26,19 @@
  *   gp.setEnabled(bool), gp.isEnabled(), gp.setGuideText(str|null), gp.setPenOnly(bool), gp.isPenOnly(), gp.hasSeenPen()
  *   gp.setMode('grid'|'single'), gp.getMode(), gp.setAutoAdvance(bool), gp.focusCell(i), gp.getFocus()
  *   gp.redraw(), gp.destroy()
- *   gp.onChange = fn({ reason: 'stroke'|'undo'|'clear'|'clearAll'|'focus'|'mode'|'autoAdvance', cell, total })
+ *   gp.onChange = fn({ reason: 'stroke'|'undo'|'clear'|'clearAll'|'focus'|'mode'|'autoAdvance', cell, total, manual })
+ *                 manual: a 'mode' change the learner made (the 모든 칸 / 한 칸씩 switch or setMode), not the auto choice
+ *
+ * The 모든 칸 / 한 칸씩 switch ignores a touch while a pen is writing or hovering near the block (pen-only on, a pen
+ * seen, html.pad-pen-near): that is the writing hand's palm, and switching the view under it would look like the
+ * writing was wiped (and drop a stroke in progress). A finger works again once the pen is put away.
  *
  * Deviations from docs/SPEC-words.md G (all additive; the G API itself is as specified):
  *   - Guide glyphs are drawn from the stroke data the judge uses (KANA_DATA kana + extra, KANJI_DATA when it is
  *     loaded), not from the textbook font: the font's glyphs sit off the model by an amount that depends on the
  *     fallback font, while the stroke data puts small kana and 、。 exactly where box judging expects them.
  *     Characters without stroke data fall back to the font.
- *   - Extra options mode / autoAdvance / onCellClick / pressure, extra methods (getStrokeCount,
+ *   - Extra options mode / autoAdvance / onCellClick / pressure / penZone / fitScreen, extra methods (getStrokeCount,
  *     getCellStrokeCount, isEnabled, isPenOnly, hasSeenPen, getMode, setAutoAdvance, redraw), the onChange
  *     payload above, and a neutral '-' mark (SPEC-words J: kanji without stroke data are not graded).
  *   - clearCell / clearAll also drop the marks of the cells they clear.
@@ -123,7 +131,7 @@
   function create(host, options) {
     const Ink = root.DrawPad && root.DrawPad.Ink;
     if (!Ink) throw new Error('GridPad needs js/drawpad.js (DrawPad.Ink) loaded first');
-    const opts = Object.assign({ penOnly: true, pressure: true, label: '원고지 — 한 칸에 한 글자씩 쓰세요', mode: 'auto', autoAdvance: false, guideText: null }, options || {});
+    const opts = Object.assign({ penOnly: true, pressure: true, label: '원고지 — 한 칸에 한 글자씩 쓰세요', mode: 'auto', autoAdvance: false, guideText: null, fitScreen: false }, options || {});
     const doc = host.ownerDocument || document;
     const win = doc.defaultView || root;
 
@@ -215,21 +223,31 @@
       return b;
     });
     const strip = h('div', { class: 'gp-strip', role: 'group', 'aria-label': '칸 미리보기 — 누르면 그 칸으로 가요' }, ...minis);
-    const single = h('div', { class: 'gp-single' },
-      h('div', { class: 'gp-stage' }, big.el, h('div', { class: 'gp-nav' }, prevBtn, posEl, nextBtn)),
-      strip);
+    const stage = h('div', { class: 'gp-stage' }, big.el, h('div', { class: 'gp-nav' }, prevBtn, posEl, nextBtn));
+    const single = h('div', { class: 'gp-single' }, stage, strip);
 
     const autoInput = h('input', { type: 'checkbox', class: 'switch switch-sm', role: 'switch', checked: autoAdvance,
       on: { change: (e) => { autoAdvance = !!e.target.checked; if (!autoAdvance) stopAdvance(); notify('autoAdvance', null); } } });
     const autoLabel = h('label', { class: 'pen-toggle gp-auto' }, autoInput, h('span', null, '다 쓰면 다음 칸으로'));
-    const modeBtns = {
-      grid: h('button', { type: 'button', class: 'chip gp-mode', on: { click: () => setMode('grid') } }, '모든 칸'),
-      single: h('button', { type: 'button', class: 'chip gp-mode', on: { click: () => setMode('single') } }, '한 칸씩'),
+    // The view switch: a touch on it while the pen is writing or hovering near the block is the palm (header).
+    // pointerType from the click itself (a PointerEvent in current browsers), else from the pointerdown before it.
+    let downType = '';
+    const palmTap = (e) => {
+      const type = (e && e.pointerType) || downType;
+      return type === 'touch' && penOnly && Ink.hasSeenPen() && doc.documentElement.classList.contains('pad-pen-near');
     };
-    const bar = h('div', { class: 'gp-bar' }, autoLabel, h('span', { class: 'gp-bar-gap' }),
-      h('div', { class: 'gp-modes', role: 'group', 'aria-label': '칸 보기' }, modeBtns.grid, modeBtns.single));
+    const switchTo = (m) => (e) => { if (!palmTap(e)) setMode(m); };
+    const modeBtns = {
+      grid: h('button', { type: 'button', class: 'chip gp-mode', on: { click: switchTo('grid') } }, '모든 칸'),
+      single: h('button', { type: 'button', class: 'chip gp-mode', on: { click: switchTo('single') } }, '한 칸씩'),
+    };
+    const modes = h('div', { class: 'gp-modes', role: 'group', 'aria-label': '칸 보기',
+      on: { pointerdown: (e) => { downType = e.pointerType || ''; } } }, modeBtns.grid, modeBtns.single);
+    const bar = h('div', { class: 'gp-bar' }, autoLabel, h('span', { class: 'gp-bar-gap' }), modes);
+    // fitScreen: measures the small viewport's height (css 100svh)
+    const vhProbe = opts.fitScreen ? h('div', { class: 'gp-vh', 'aria-hidden': 'true' }) : null;
 
-    const el = h('div', { class: 'gp', role: 'group', 'aria-label': opts.label }, sheet, single, bar);
+    const el = h('div', { class: 'gp' + (opts.fitScreen ? ' gp-fit' : ''), role: 'group', 'aria-label': opts.label }, sheet, single, bar, vhProbe);
     host.appendChild(el);
 
     /* ---------------------------------------------------------- labels, marks, guide, minis */
@@ -376,6 +394,7 @@
         cellPx = plan.s;
         faces.forEach((f) => { if (f) Ink.fitCanvas(f.canvas, cellPx, cellPx, dpr); });
       } else {
+        fitScreen();
         bigPx = Math.max(1, Math.round(big.el.getBoundingClientRect().width));
         Ink.fitCanvas(big.canvas, bigPx, bigPx, dpr);
         renderBig();
@@ -383,6 +402,32 @@
       }
       invalidateAll();
       if (modeChanged) notify('mode', null);
+    }
+
+    /* fitScreen (single mode, while the pad takes input): the big cell's side may be at most the small viewport's
+     * height less the stage's offset from the top of the document and a margin — so at scroll 0 the whole cell is on
+     * the first screen however tall the page above it is (css .gp-fit: never under 12rem nor over 30rem / the width).
+     * Re-run when anything on the page changes size (the body's size observer below), on a resize and on a layout; a
+     * new value resizes the big cell, which the size observer then lays out. */
+    const FIT_MARGIN = 10;
+    let fitPx = -1;
+    function fitScreen() {
+      if (!vhProbe || destroyed || mode !== 'single' || !enabled || !el.isConnected) return;
+      const vh = vhProbe.getBoundingClientRect().height || win.innerHeight || 0;
+      const top = stage.getBoundingClientRect().top + (win.scrollY || win.pageYOffset || 0);
+      if (!vh) return;
+      const px = Math.max(0, Math.floor(vh - top - FIT_MARGIN));
+      if (px === fitPx) return;
+      fitPx = px;
+      el.style.setProperty('--gp-fit', px + 'px');
+    }
+    let stopFit = () => {};
+    if (vhProbe) {
+      const onFit = () => { if (!destroyed) fitScreen(); };
+      const ro = win.ResizeObserver ? new win.ResizeObserver(onFit) : null;
+      if (ro && doc.body) ro.observe(doc.body);
+      win.addEventListener('resize', onFit);
+      stopFit = () => { if (ro) ro.disconnect(); win.removeEventListener('resize', onFit); };
     }
 
     function scheduleLayout() {
@@ -610,20 +655,24 @@
 
     function setMode(m) {
       if (m !== 'grid' && m !== 'single') return;
+      const wasAuto = modeAuto;
       modeAuto = false;
-      if (m === mode) return;
+      // (the view the auto choice already showed: now the learner's choice too)
+      if (m === mode) { if (wasAuto) notify('mode', null, true); return; }
       leaveMode();
       mode = m;
       layout();
       if (mode === 'grid' && focus >= 0 && el.isConnected) faces[focus].el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      notify('mode', null);
+      notify('mode', null, true);
     }
 
     /* ---------------------------------------------------------- editing */
 
-    function notify(reason, cell) {
+    function notify(reason, cell, manual) {
       if (!ready || typeof api.onChange !== 'function') return;
-      try { api.onChange({ reason, cell: cell == null ? null : cell, total: order.length }); } catch (e) { if (root.console) console.error(e); }
+      const info = { reason, cell: cell == null ? null : cell, total: order.length };
+      if (reason === 'mode') info.manual = !!manual;
+      try { api.onChange(info); } catch (e) { if (root.console) console.error(e); }
     }
 
     function undo() {
@@ -683,6 +732,7 @@
       if (!enabled) { pen.cancel(); stopAdvance(); }
       updateClickable();
       syncPenSurface();
+      if (enabled) fitScreen();
     }
 
     function getCellStrokes(i) {
@@ -708,6 +758,7 @@
       stopSize();
       stopScheme();
       if (themeObs) themeObs.disconnect();
+      stopFit();
       stopAdvance();
       const cancel = win.cancelAnimationFrame ? (id) => win.cancelAnimationFrame(id) : clearTimeout;
       if (rafId) cancel(rafId);
