@@ -511,48 +511,124 @@
    *   run  = endlessStart({ retryTri })                   → { asked: [], retries: [], retryStreak: 0, retryTri }
    *   pick = nextEndless(run, pool, statsOf, rng, opts)   → { key, retry } (key is appended to run.asked)
    *   endlessRecord(run, key, mark, rng, poolSize)        after the answer is graded ('o' | 't' | 'x')
-   * statsOf(key) → { x, t, seen, mult? }: recent ✕ / △ count of the item, whether it was ever answered,
-   * optional weight multiplier. opts.pairOf(key) → key that should not come right after it (か then カ).
-   * Rules:
-   *  - fresh pick: weight = (1 + 3·x + 2·t + 0.5·[never seen]) · mult, never one of the last
-   *    min(5, poolSize − 1) asked items;
+   * The run state is plain JSON. statsOf(key) → { x, t, seen, lastAt?, mult? }: recent ✕ / △ count of the item,
+   * whether it was ever answered in this mode, when it was last answered (ms, any mode; 0 = never), optional
+   * focus multiplier (헷갈리는 / 틀린 … 위주). opts.pairOf(key) → key that should not come right after it (か then カ).
+   * Rules — "rigged random" (no rounds, no deck): every fresh pick is a weighted random draw, but an item that has
+   * not come up for a while gets steadily likelier (a pity counter), so nothing hogs the run and nothing is left out
+   * for long — yet nothing is ever forced:
+   *  - fresh pick: draw among the pool minus the last min(5, poolSize − 1) asked items with
+   *      weight = base · pity(age · f)           (× 0.2 for the twin of the previous item)
+   *      base   = 1 + 0.5·min(x, 3) + 0.3·min(t, 3)       — past mistakes nudge, they no longer dominate
+   *      f      = (mult clamped to 1..4)^1.5: a focused item's pity clock runs faster, so it is due sooner — ×3 → about
+   *               2.5× as often as an unfocused one (≈ the strength of the old flat ×3), yet right after it is
+   *               asked it starts from 1 again like everything else, so it does not cluster
+   *      pity   = min(100, (1 + age / s)^2.5),  s = max(1, poolSize / 2)
+   *               (≈ 5.7 at half a pool, 15.6 at one pool, 56 at two pools, capped from ≈ 2.65 pools on)
+   *      age    = other questions asked since the item was last asked in this run. An item not asked yet in this
+   *               run has age = head + questions so far, head = poolSize · (0.75 + 0.5·stale), where stale = 1 if it
+   *               was never answered in this mode, else ln(1 + idle hours) / ln(1 + 14 · 24) capped at 1, idle
+   *               being the time from its lastAt to the newest lastAt in the pool (so unseen / long-unseen items
+   *               lead, and everything not yet asked keeps gaining weight as the run goes on);
+   *    tuned by simulation (pool 46, all ○: every item seen by ≈ 60 questions, p99 gap ≈ 2 pools, per-item count
+   *    spread about half of the old flat weights);
    *  - an item answered ✕ (or △ when retryTri, i.e. writing) is re-asked after 3–6 other questions, but never
    *    inside the no-repeat window above: 5–6 others in pools of 7+, exactly poolSize − 1 in smaller pools. A due
-   *    retry is asked before fresh picks, oldest first — but never more than two retries in a row. */
+   *    retry is asked before fresh picks, oldest first — but never more than two retries in a row. A retry, like
+   *    any question, resets the item's age. */
   const ENDLESS_WINDOW = 5;
   const RETRY_MIN = 3, RETRY_MAX = 6, RETRY_RUN = 2;
+  const PITY_SCALE = 1 / 2, PITY_POW = 2.5, PITY_CAP = 100;
+  const HEAD_MIN = 0.75, HEAD_MAX = 1.25;     // head-start age of an item not asked yet in this run, × poolSize
+  const STALE_HOURS = 14 * 24;                // idle time (log scale) at which an item counts as fully stale
+  const HOUR = 3600000;
+  const FOCUS_MAX = 4, FOCUS_POW = 1.5;       // mult (헷갈리는 / 틀린 … 위주): pity clock × (mult in 1..4)^1.5
 
   function endlessStart(opts) {
     return { asked: [], retries: [], retryStreak: 0, retryTri: !!(opts && opts.retryTri) };
   }
 
-  function nextEndless(run, pool, statsOf, rng, opts) {
-    const r = rng || Math.random;
-    const o = opts || {};
+  // Weight factor for an item `age` questions after it was last asked (grows smoothly, capped).
+  function endlessPity(age, poolSize) {
+    const s = Math.max(1, (poolSize || 1) * PITY_SCALE);
+    return Math.min(PITY_CAP, Math.pow(1 + Math.max(0, age) / s, PITY_POW));
+  }
+
+  // 0..1: how long ago the item was answered, relative to `ref` (the newest answer in the pool); 1 = never in this mode.
+  function endlessStale(s, ref) {
+    if (!s.seen) return 1;
+    const last = Number(s.lastAt) || 0;
+    if (!(last > 0) || !(ref > last)) return 0;
+    return Math.min(1, Math.log(1 + (ref - last) / HOUR) / Math.log(1 + STALE_HOURS));
+  }
+
+  const upTo3 = (v) => Math.min(3, Math.max(0, Number(v) || 0));
+
+  function uniqueKeys(pool) {
     const items = [];
     for (const k of pool || []) if (k != null && !items.includes(k)) items.push(k);
+    return items;
+  }
+
+  // The last min(5, size − 1) asked keys: neither a fresh pick nor a retry may repeat one of them.
+  function endlessWindow(run, size) {
+    const m = Math.min(ENDLESS_WINDOW, size - 1);
+    return m > 0 ? run.asked.slice(Math.max(0, run.asked.length - m)) : [];
+  }
+
+  // Candidates and weights of the next fresh pick (the rules above).
+  function freshWeights(run, items, statsOf, o) {
+    const n = run.asked.length;
+    const size = items.length;
+    const recent = endlessWindow(run, size);
+    let cands = items.filter((k) => !recent.includes(k));
+    if (!cands.length) cands = items;
+    const twin = n > 0 && o.pairOf ? o.pairOf(run.asked[n - 1]) : null;
+    const lastIdx = new Map();
+    run.asked.forEach((k, i) => lastIdx.set(k, i));
+    const stats = new Map(items.map((k) => [k, (statsOf && statsOf(k)) || {}]));
+    let ref = 0;
+    for (const s of stats.values()) if (Number(s.lastAt) > ref) ref = Number(s.lastAt);
+    const weights = cands.map((k) => {
+      const s = stats.get(k);
+      const at = lastIdx.has(k) ? lastIdx.get(k) : -1;
+      const age = at >= 0 ? n - 1 - at : n + size * (HEAD_MIN + (HEAD_MAX - HEAD_MIN) * endlessStale(s, ref));
+      const base = 1 + 0.5 * upTo3(s.x) + 0.3 * upTo3(s.t);
+      // a focused item's pity clock runs faster (it is due sooner), but it starts from 1 again once asked
+      const mult = s.mult > 1 ? Math.min(FOCUS_MAX, s.mult) : 1;      // never slower than ×1: nothing starves
+      let w = base * endlessPity(age * Math.pow(mult, FOCUS_POW), size);
+      if (twin != null && k === twin && cands.length > 1) w *= 0.2;
+      return w;
+    });
+    return { cands, weights };
+  }
+
+  // { key: probability } of the next fresh pick (due retries aside) — for tests and tuning.
+  function endlessOdds(run, pool, statsOf, opts) {
+    const items = uniqueKeys(pool);
+    if (!items.length) return {};
+    const { cands, weights } = freshWeights(run, items, statsOf, opts || {});
+    const total = weights.reduce((a, b) => a + b, 0);
+    const out = {};
+    cands.forEach((k, i) => { out[k] = weights[i] / total; });
+    return out;
+  }
+
+  function nextEndless(run, pool, statsOf, rng, opts) {
+    const r = rng || Math.random;
+    const items = uniqueKeys(pool);
     if (!items.length) return null;
     const n = run.asked.length;
-    const since = (m) => run.asked.slice(Math.max(0, n - m)); // the last m asked keys
     let key = null, retry = false;
     if (run.retryStreak < RETRY_RUN) {
-      const tooSoon = since(Math.min(ENDLESS_WINDOW, items.length - 1));
+      const tooSoon = endlessWindow(run, items.length);
       const due = run.retries
         .filter((x) => x.due <= n && items.includes(x.key) && !tooSoon.includes(x.key))
         .sort((a, b) => a.due - b.due);
       if (due.length) { key = due[0].key; retry = true; }
     }
     if (key == null) {
-      const recent = since(Math.min(ENDLESS_WINDOW, items.length - 1));
-      let cands = items.filter((k) => !recent.includes(k));
-      if (!cands.length) cands = items;
-      const twin = n > 0 && o.pairOf ? o.pairOf(run.asked[n - 1]) : null;
-      const weights = cands.map((k) => {
-        const s = (statsOf && statsOf(k)) || {};
-        let w = (1 + 3 * (s.x || 0) + 2 * (s.t || 0) + (s.seen ? 0 : 0.5)) * (s.mult > 0 ? s.mult : 1);
-        if (twin != null && k === twin && cands.length > 1) w *= 0.2;
-        return w;
-      });
+      const { cands, weights } = freshWeights(run, items, statsOf, opts || {});
       const total = weights.reduce((a, b) => a + b, 0);
       let u = r() * total;
       key = cands[cands.length - 1];
@@ -583,12 +659,13 @@
   }
 
   /* statsOf for kana in an endless run: recent ✕ / △ of the char in this mode (stats.chars[ch].recent), whether
-   * it was ever answered in this mode, and the 헷갈리는 글자 위주 multiplier. */
+   * it was ever answered in this mode, when it was last answered in any mode (stats.chars[ch].last), and the
+   * focus multiplier: 헷갈리는 글자 위주 (×3 / ×1.75) times 틀린 글자 위주 (1 + 2 · wrongness). */
   function endlessStatsOf(stats, mode, settings, data, pool) {
     const available = new Set(pool || []);
     return (ch) => {
       const c = charStats(stats, ch);
-      let x = 0, t = 0, seen = false;
+      let x = 0, t = 0, seen = false, lastAt = 0;
       if (c) {
         for (const e of c.recent || []) {
           if (mode && e.m && e.m !== mode) continue;
@@ -597,13 +674,16 @@
         }
         const r = c.read.ok + c.read.ng + c.read.cheat, w = c.write.o + c.write.t + c.write.x + c.write.cheat;
         seen = (mode === 'read' ? r : mode === 'write' ? w : r + w) > 0;
+        lastAt = nat(c.last);
       }
       let mult = 1;
       const k = data && data.kana[ch];
       if (settings && settings.focusConfusable && k && k.confusables.length) {
         mult = k.confusables.some((p) => available.has(p)) ? 3 : 1.75;
       }
-      return { x, t, seen, mult };
+      // 틀린 글자 위주: same scale as 단어장's 틀린 것 위주 (1 + 2 · wrong rate), on top of the small ✕/△ nudge
+      if (settings && settings.focusWrong) mult *= 1 + 2 * wrongness(stats, ch, mode);
+      return { x, t, seen, lastAt, mult };
     };
   }
 
@@ -616,6 +696,6 @@
     groupFor, findLookalikeAnswer, charsWithReading, checkReading,
     emptyStats, sanitizeStats, recordReading, recordWriting, markOfVerdict, summarize, recordSession,
     charMastery, topConfusions, orderTrouble, hasHistory,
-    endlessStart, nextEndless, endlessRecord, endlessStatsOf,
+    endlessStart, nextEndless, endlessRecord, endlessStatsOf, endlessPity, endlessOdds,
   };
 });

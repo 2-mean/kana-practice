@@ -317,13 +317,14 @@
     return 1 + 3 * r.x + 2 * r.t + 2 * wrongRate(e, mode) + (seenIn(e, mode) ? 0 : 0.5);
   }
 
-  // Quiz.nextEndless statsOf for entry ids (both parts count for read+뜻 / 한자 읽기 — MODE_KEYS).
+  // Quiz.nextEndless statsOf for entry ids (both parts count for read+뜻 / 한자 읽기 — MODE_KEYS); lastAt = the
+  // entry's last answer in any practice kind (stats.last), for the "not seen for a long time" head start.
   function endlessStatsFor(byId, mode, focusWrong) {
     return (id) => {
       const e = byId.get(id);
-      if (!e) return { x: 0, t: 0, seen: false, mult: 1 };
+      if (!e) return { x: 0, t: 0, seen: false, lastAt: 0, mult: 1 };
       const r = recentOf(e, mode);
-      return { x: r.x, t: r.t, seen: seenIn(e, mode), mult: focusWrong ? 1 + 2 * wrongRate(e, mode) : 1 };
+      return { x: r.x, t: r.t, seen: seenIn(e, mode), lastAt: statsOf(e).last, mult: focusWrong ? 1 + 2 * wrongRate(e, mode) : 1 };
     };
   }
 
