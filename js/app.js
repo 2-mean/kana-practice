@@ -517,6 +517,8 @@
 
   function syncModalClass() {
     document.documentElement.classList.toggle('modal-open', anyDialogOpen());
+    // a pad behind a modal no longer holds the page pinned for a nearby pen (DrawPad.Ink.nearZone)
+    if (DP && DP.Ink && DP.Ink.nearSync) DP.Ink.nearSync(document);
   }
 
   function anyDialogOpen() {
@@ -1497,7 +1499,8 @@
       resultBox.classList.add('is-stale');
       const focusTarget = gradeBtn;
       if (window.matchMedia && window.matchMedia('(max-width: 899px)').matches) {
-        padHost.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'center' });
+        // instant, not smooth: a stroke started while the page is still gliding would be bent by it
+        padHost.scrollIntoView({ behavior: 'auto', block: 'center' });
       }
       focusTarget.focus({ preventScroll: true });
     }

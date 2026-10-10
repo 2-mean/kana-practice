@@ -61,6 +61,10 @@
 }
 /* Pen seen with pen-only on: fingers are ignored anyway, and a pen starting in a gap must write, not scroll. */
 .gp.gp-pen:not(.is-disabled) .gp-sheet { touch-action: none; }
+/* Ring around each row: a stroke begun just outside a row writes into the nearest cell instead of panning the page
+ * (4 px past the border; only a few px in the middle of a 12 px gap are left to scroll). */
+.gp:not(.is-disabled) .gp-row { position: relative; }
+.gp:not(.is-disabled) .gp-row::before { content: ""; position: absolute; inset: -6px; }
 .gp-row {
   display: flex;
   border: 2px solid var(--guide-strong); /* ROW_BORDER in gridpad.js */
@@ -95,6 +99,12 @@
   overscroll-behavior: contain;
 }
 .gp-big .gp-hit { border-radius: 6px; }
+/* Ring around the big cell (6 px at the bottom: the 이전/다음 row is 8 px below). */
+.gp:not(.is-disabled) .gp-big::before { content: ""; position: absolute; inset: -8px -8px -6px -8px; }
+/* A pen near the block (html.pad-pen-near, DrawPad.Ink): the top ring reaches further up, for a pen stroke begun a
+ * little above the first row or the big cell. */
+html.pad-pen-near .gp:not(.is-disabled) .gp-row:first-child::before { top: -16px; }
+html.pad-pen-near .gp:not(.is-disabled) .gp-big::before { top: -18px; }
 .gp-big .gp-mark .mk path { stroke-width: 1.8; } /* about the app's large mark weight, not 3× it */
 .gp-adv {
   position: absolute; left: 8px; right: 8px; bottom: 6px; height: 3px; border-radius: 2px;

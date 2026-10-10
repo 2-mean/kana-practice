@@ -3230,7 +3230,8 @@
       resultBox.classList.add('is-stale');
       nextWrap.hidden = true;
       updateCounter();
-      if (narrow()) pad.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'center' });
+      // instant, not smooth: a stroke started while the page is still gliding would be bent by it
+      if (narrow()) pad.scrollIntoView({ behavior: 'auto', block: 'center' });
       focusEl(gradeBtn);
     }
 

@@ -166,6 +166,7 @@ html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   background-color: var(--paper);
+  touch-action: manipulation; /* no double-tap zoom (two quick ticks beside a box); panning and pinch-zoom stay */
 }
 
 html.modal-open { overflow: hidden; }
@@ -771,6 +772,29 @@ details.more[open] > summary { margin-bottom: 8px; }
 .pad.is-disabled .pad-canvas { cursor: default; }
 .pad.is-disabled { opacity: 0.92; }
 html.pad-drawing, html.pad-drawing * { user-select: none !important; -webkit-user-select: none !important; }
+/* Keeping the page still while writing (js/drawpad.js header). The ring: a stroke begun a few px outside the box
+ * writes instead of panning the page (6 px at the bottom: the tools row is 8-10 px below). */
+.pad:not(.is-disabled)::before { content: ""; position: absolute; inset: -12px -12px -6px -12px; }
+.pad.is-disabled, .pad.is-disabled .pad-canvas { touch-action: manipulation; } /* graded: the page scrolls over it */
+/* A pen over the writing block or writing (DrawPad.Ink.nearZone): nothing on the page pans, so the writing hand
+ * resting anywhere cannot scroll it between strokes. Scrollers are listed because a scroll container starts its own
+ * touch-action chain. Taps still work; once the pen is put away a finger scrolls as usual. The box's ring reaches
+ * further up then, for a pen stroke begun a little above the box. */
+html.pad-pen-near, html.pad-pen-near body, html.pad-pen-near .sheet-panel:has(.pad:not(.is-disabled)) { touch-action: none; }
+html.pad-pen-near .gp-strip { touch-action: pan-x; }   /* the mini strip still scrolls sideways */
+html.pad-pen-near .pad:not(.is-disabled)::before { top: -24px; }
+/* Touch screens: during a stroke — and after it while a palm or finger that was panning is still down
+ * (html.pad-hold, DrawPad.Ink) — the page and the dialog's scroller do not scroll at all, so such a pan stops instead
+ * of fighting the tracker's scroll pin or resuming between strokes. On the root only (it propagates to the viewport;
+ * on body it would make body a scroller and shift sticky elements); while a pad is live the scrollbar gutter is kept
+ * so a classic scrollbar cannot shift the layout when overflow toggles. Touch laptops whose primary pointer is fine
+ * are left out on purpose (the tracker's scroll pin still keeps their strokes straight). */
+@media (pointer: coarse) {
+  html.pad-live:not(.modal-open), .sheet-panel { scrollbar-gutter: stable; }
+  html.pad-drawing, html.pad-hold, html.pad-drawing .sheet-panel, html.pad-hold .sheet-panel { overflow: hidden; }
+}
+/* While a pad takes input: no rubber-band / pull-to-refresh, and no scroll chained into a host page. */
+html.pad-live { overscroll-behavior: none; }
 
 /* writing result */
 .wres {

@@ -9,6 +9,8 @@
  *                  'grid' | 'single'; the built-in 모든 칸 / 한 칸씩 switch toggles it anywhere
  *     autoAdvance  single mode: move to the next cell shortly after the last stroke (default false)
  *     onCellClick  fn(i) — while disabled (after grading) the cells become buttons that call it
+ *     penZone      the writing block: a pen over it pins the page (default: the host's parent — the 원고지 with its
+ *                  tools and buttons; DrawPad.Ink.nearZone, css html.pad-pen-near); null for none
  *   gp.el, gp.cellCount
  *   gp.getCellStrokes(i)  → Array<Array<[x, y]>> in CELL coordinates (cell box 0..100, y down). Points of a
  *                           stroke that runs past the cell edge are kept, as in DrawPad.
@@ -39,11 +41,16 @@
  *
  * A stroke belongs to the cell containing its first point; one starting off the write cells — on a space cell,
  * a row's border or (pen or mouse) in the gap between rows — goes to the write cell nearest the middle of what
- * it draws, so a stroke begun just above a cell lands in that cell. Only the cell rows block scrolling
- * (touch-action: none), so a finger on the row gaps, the mini strip or the buttons still scrolls the page —
- * except that once a pen has been seen with pen-only on, the row gaps become writing surface too (fingers are
- * ignored there anyway, and a pen starting just outside a cell must not scroll the page instead). A pen stroke
- * that starts in a gap and is then taken over by the browser (pointercancel) is dropped.
+ * it draws, so a stroke begun just above a cell lands in that cell. A stroke that never enters its cell (ink
+ * included) is dropped: a tap or a flick beside the cells is not a stroke. The cell rows block scrolling
+ * (touch-action: none), each with a thin ring around it (.gp-row::before, css/gridpad.css) that writes into the
+ * nearest cell for a finger too, so a stroke begun at a row's edge does not pan the page; the rings leave only a
+ * few px in the middle of a row gap, so scroll from the bar, the mini strip, the prompt or the margins. Once a pen
+ * has been seen with pen-only on, the row gaps are writing surface too (fingers are ignored there anyway, and a pen
+ * starting just outside a cell must not scroll the page instead). While a pen is over the writing block (penZone)
+ * nothing on the page pans (DrawPad.Ink.nearZone), and during a stroke any scroll is undone at once (the tracker).
+ * A pen stroke that starts in a gap and is then taken over by the browser (pointercancel) is dropped. In single
+ * mode the big cell has a ring too (.gp-big::before).
  * Pen handling — pen-only palm rejection shared with DrawPad, coalesced events, DPR, focus hand-back — is
  * DrawPad.Ink, so js/drawpad.js must be loaded first. Styles: css/gridpad.css plus app.css (.mk .btn .chip .switch). */
 (function (root, factory) {
@@ -463,8 +470,9 @@
       let i = box && box.classList.contains('gp-cell') ? Number(box.getAttribute('data-i')) : -1;
       let free = false;
       if (i < 0) {
-        // A finger in a row gap scrolls the page; a pen or mouse there (or anything on a space) writes in the nearest cell.
-        if (!box && e.pointerType === 'touch') return null;
+        // A finger in a row gap scrolls the page — except on the ring around a row (the target is the row itself,
+        // via its ::before); a pen or mouse in a gap (or anything on a space or a ring) writes in the nearest cell.
+        if (!box && e.pointerType === 'touch' && !t.classList.contains('gp-row')) return null;
         i = nearestCell(e.clientX, e.clientY);
         if (i < 0) return null;
         free = true;
@@ -504,8 +512,17 @@
     }
 
     // Once a pen is known (pen-only on), the row gaps stop scrolling the page: css .gp-pen.
-    function syncPenSurface() { el.classList.toggle('gp-pen', penOnly && Ink.hasSeenPen()); }
+    // Also: a pen near the writing block pins the page (html.pad-pen-near), and while the pad takes input the page
+    // doesn't rubber-band or drag a host page (html.pad-live) — DrawPad.Ink.nearZone / setLive.
+    const zone = opts.penZone === undefined ? host.parentElement : opts.penZone;
+    if (Ink.nearZone) Ink.nearZone(doc, el, zone, () => enabled && !destroyed);
+    function syncPenSurface() {
+      el.classList.toggle('gp-pen', penOnly && Ink.hasSeenPen());
+      if (Ink.setLive) Ink.setLive(doc, el, enabled && !destroyed);
+      if (Ink.nearSync) Ink.nearSync(doc);
+    }
     const stopPenWatch = Ink.onPenSeen ? Ink.onPenSeen(syncPenSurface) : () => {};
+    syncPenSurface();
 
     // Touch / selection defaults are cancelled only on the writable surface, so the page scrolls elsewhere.
     function guard(e) {
@@ -520,9 +537,17 @@
       pressure: !!opts.pressure,
       hit,
       guard,
-      update(st) { stopAdvance(); invalidate(follow(st)); },
+      update(st) { if (advTimer) st.hadAdvance = true; stopAdvance(); invalidate(follow(st)); },
       commit(st) {
         const i = follow(st);
+        // Never inside its cell, ink included (a tap or a flick on a ring or in a gap): not a stroke. An auto-advance
+        // that was pending when this touch stopped it (update) carries on.
+        const px = mode === 'single' ? bigPx : cellPx;
+        if (px && Ink.inksBox && !Ink.inksBox(st.pts, UNIT, px / UNIT)) {
+          invalidate(i);
+          if (st.hadAdvance && mode === 'single' && autoAdvance && i === focus) startAdvance(i);
+          return;
+        }
         data[i].push({ pts: st.pts, type: st.type });
         order.push(i);
         marks.delete(i);
@@ -657,6 +682,7 @@
       el.classList.toggle('is-disabled', !enabled);
       if (!enabled) { pen.cancel(); stopAdvance(); }
       updateClickable();
+      syncPenSurface();
     }
 
     function getCellStrokes(i) {
@@ -677,6 +703,8 @@
       destroyed = true;
       pen.destroy();
       stopPenWatch();
+      if (Ink.nearZone) Ink.nearZone(doc, el, null);
+      syncPenSurface();
       stopSize();
       stopScheme();
       if (themeObs) themeObs.disconnect();

@@ -9,12 +9,22 @@
  *   pad.setPenOnly(bool), pad.isPenOnly(), pad.hasSeenPen()
  *   pad.setEnabled(bool), pad.getBoxSize(), pad.redraw(), pad.destroy()
  *   pad.onChange = fn(strokes, { reason: 'stroke'|'undo'|'clear'|'resize' })
+ *   options.penZone      the writing block: a pen over it pins the page (default: the host's parent — the pad with
+ *                        its tools and buttons); null for none
  *
  * Palm rejection: with penOnly on, once a 'pen' pointer has been seen, 'touch' pointers are ignored
  * (and a touch stroke in progress is dropped when the pen comes down or hovers into view). Pen detection is
  * shared by every pad of the page session and also counts a hovering pen, so a palm that lands on a fresh
  * pad before the pen's first contact is still rejected. A second finger landing during a touch stroke
  * (pinch, two-finger scroll, palm) drops that stroke.
+ *
+ * Keeping the page still while writing (the box is re-read on every move, so a page that moves under the pen bends
+ * the stroke): a thin ring around the box (.pad::before, css/app.css) is writing surface too, so a stroke begun just
+ * outside the box writes instead of panning the page — a stroke that never enters the box is dropped; while a pen
+ * is over the writing block (penZone) or writing, nothing on the page pans (html.pad-pen-near), so the writing hand
+ * resting anywhere cannot scroll it between strokes; during a stroke any scroll that still happens is undone at
+ * once (tracker pinScroll); and while any pad takes input the page neither rubber-bands nor chains a scroll into a
+ * host page (html.pad-live).
  *
  * DrawPad.Ink is the pointer / ink plumbing shared with js/gridpad.js (not part of the app-facing API). */
 (function (root, factory) {
@@ -71,7 +81,181 @@
     if (doc && doc.documentElement) doc.documentElement.classList.toggle('pad-drawing', on);
   }
 
+  // Counted class: el has cls while at least one owner holds it (several pads can share a page or a block).
+  const holds = new WeakMap();   // el → Map(cls → Set(owner))
+  function hold(el, cls, owner, on) {
+    if (!el || !el.classList) return;
+    let m = holds.get(el);
+    if (!m) { m = new Map(); holds.set(el, m); }
+    let set = m.get(cls);
+    if (!set) { set = new Set(); m.set(cls, set); }
+    if (on) set.add(owner);
+    else set.delete(owner);
+    el.classList.toggle(cls, set.size > 0);
+  }
+
+  /* While a pad takes input, html.pad-live: the page neither rubber-bands nor pull-to-refreshes, and does not chain
+   * a scroll into a host page (css overscroll-behavior). Not in an iframe whose document cannot scroll (an embed
+   * sized to its content): there it would stop the host page from scrolling at all. */
+  function setLive(doc, owner, on) {
+    const win = doc.defaultView || root;
+    let ok = on;
+    if (ok) {
+      try { ok = win.top === win || doc.documentElement.scrollHeight > (win.innerHeight || 0) + 1; } catch (e) { ok = true; }
+    }
+    hold(doc.documentElement, 'pad-live', owner, ok);
+  }
+
+  /* Pen near the writing block -> the whole page is pinned. While a pen has been over a live pad's block (its zone: by
+   * default the host's parent — the box with its tools and buttons) within NEAR_MS, or is writing, html has
+   * .pad-pen-near: touch-action none page-wide, scrollers included (css/app.css), so the writing hand resting
+   * anywhere — below the box, on the gutters, on the mini strip, in a dialog — cannot pan the page between strokes.
+   * Once the pen is put away a finger scrolls as usual; taps work throughout (touch-action never blocks a tap).
+   * A hovering pen (S Pen, Apple Pencil on an M2 iPad Pro) arms it before the first contact, else the first stroke
+   * does. */
+  const NEAR_MS = 1500;
+  const nearZones = new Map();      // owner -> { zone, live() }
+  const nearTimers = new WeakMap(); // document -> timer
+  const nearWatched = new WeakSet();
+
+  function nearOff(doc) {
+    const win = doc.defaultView || root;
+    const t = nearTimers.get(doc);
+    if (t) { win.clearTimeout(t); nearTimers.delete(doc); }
+    doc.documentElement.classList.remove('pad-pen-near');
+  }
+
+  function openModal(doc) {
+    try { return doc.querySelector('dialog:modal'); } catch (e) { return doc.querySelector('dialog[open]'); }
+  }
+
+  // A live zone (not hidden behind a modal dialog) that contains target, or whose rect — 24 px taller at the top, 12 px
+  // wider at the sides, for a pen coming from the prompt above — contains (x, y); any live zone when neither is given.
+  function anyLiveZone(doc, target, x, y) {
+    const modal = openModal(doc);
+    for (const z of nearZones.values()) {
+      if (!z.live() || z.zone.ownerDocument !== doc || !z.zone.isConnected) continue;
+      if (modal && !modal.contains(z.zone)) continue;
+      if (!target) return true;
+      if (z.zone.contains(target)) return true;
+      if (x != null) {
+        const r = z.zone.getBoundingClientRect();
+        if (r.width && x >= r.left - 12 && x <= r.right + 12 && y >= r.top - 24 && y <= r.bottom) return true;
+      }
+    }
+    return false;
+  }
+
+  function armNear(doc) {
+    const win = doc.defaultView || root;
+    const t = nearTimers.get(doc);
+    if (t) win.clearTimeout(t);
+    doc.documentElement.classList.add('pad-pen-near');
+    nearTimers.set(doc, win.setTimeout(function expire() {
+      // still writing (a long stroke): keep it
+      if (doc.documentElement.classList.contains('pad-drawing') && anyLiveZone(doc)) { nearTimers.set(doc, win.setTimeout(expire, NEAR_MS)); return; }
+      nearOff(doc);
+    }, NEAR_MS));
+  }
+
+  function watchNear(doc) {
+    if (!doc || nearWatched.has(doc)) return;
+    nearWatched.add(doc);
+    const fn = (e) => { if (e.pointerType === 'pen' && anyLiveZone(doc, e.target, e.clientX, e.clientY)) armNear(doc); };
+    ['pointerover', 'pointermove', 'pointerdown', 'pointerup'].forEach((t) => doc.addEventListener(t, fn, { capture: true, passive: true }));
+  }
+
+  function nearSync(doc) { if (!anyLiveZone(doc)) nearOff(doc); }
+
+  /* A palm (or finger) that was already panning the page when the pen came down: html.pad-drawing stops the pan
+   * (css overflow, touch screens), but the browser resumes it the moment the stroke ends. So when a stroke ends while
+   * touches are still down, html.pad-hold keeps the page still until the last of them lifts (HOLD_MAX_MS at most). */
+  const HOLD_MAX_MS = 4000;
+  const touchState = new WeakMap();   // document -> { down, timer }
+
+  function watchTouches(doc) {
+    if (!doc || touchState.has(doc)) return;
+    const st = { down: 0, timer: 0 };
+    touchState.set(doc, st);
+    const upd = (e) => {
+      st.down = e.touches ? e.touches.length : 0;
+      if (!st.down) releaseHold(doc);
+    };
+    ['touchstart', 'touchend', 'touchcancel'].forEach((t) => doc.addEventListener(t, upd, { capture: true, passive: true }));
+    // A touch whose target is removed from the page while it is down ends on the detached target only, never on the
+    // document: listen there too, or the count stays stale and every later stroke holds the page for HOLD_MAX_MS.
+    doc.addEventListener('touchstart', (e) => {
+      const t = e.target;
+      if (!t || !t.addEventListener) return;
+      ['touchend', 'touchcancel'].forEach((type) => t.addEventListener(type, (ev) => { if (!t.isConnected) upd(ev); }, { once: true, passive: true }));
+    }, { capture: true, passive: true });
+  }
+
+  function releaseHold(doc) {
+    const st = touchState.get(doc);
+    if (st && st.timer) { (doc.defaultView || root).clearTimeout(st.timer); st.timer = 0; }
+    doc.documentElement.classList.remove('pad-hold');
+  }
+
+  function holdWhileTouched(doc) {
+    const st = touchState.get(doc);
+    if (!st || !st.down) return;
+    const win = doc.defaultView || root;
+    doc.documentElement.classList.add('pad-hold');
+    if (st.timer) win.clearTimeout(st.timer);
+    st.timer = win.setTimeout(() => releaseHold(doc), HOLD_MAX_MS);
+  }
+
+  // Registers (zone) or removes (zone null) a pad's block. Call nearSync() whenever the pad's liveness changes.
+  function nearZone(doc, owner, zone, live) {
+    if (zone) { nearZones.set(owner, { zone, live }); watchNear(doc); } else nearZones.delete(owner);
+    nearSync(doc);
+  }
+
   function pixelRatio(win) { return Math.max(1, Math.min(3, (win && win.devicePixelRatio) || 1)); }
+
+  /* Whether stroke P (points { x, y, f } in local units, k css px per unit, box 0..side) leaves at least INK_MIN css px
+   * of visible ink inside the box, from the ink drawStroke() actually lays down: a dot of radius 0.62·base·f of its
+   * first point, each segment a line of half-width 0.5·base·(mean f of its ends) (base = baseWidth of the box's css
+   * size). Segments, not points: a quick flick across a corner inks the box between two samples outside it. A stroke
+   * begun on the ring around a box that never reaches into it this far — a tap or a flick beside the box — is not a
+   * stroke. */
+  const INK_MIN = 1.5;
+  function inksBox(P, side, k) {
+    if (!P.length) return false;
+    const base = baseWidth(side * k);
+    const f = (p) => p.f || 1;
+    // distance (units) from point (x, y) to the box, 0 inside
+    const dPt = (x, y) => Math.hypot(Math.max(-x, 0, x - side), Math.max(-y, 0, y - side));
+    // distance (units) from segment a-b to the box: 0 if it crosses the box, else the least of its ends' distances and
+    // the box corners' distances to the segment
+    function dSeg(a, b) {
+      if (Math.max(a.x, b.x) >= 0 && Math.min(a.x, b.x) <= side && Math.max(a.y, b.y) >= 0 && Math.min(a.y, b.y) <= side) {
+        // bounding boxes overlap: does the segment actually cross the box? sample it finely enough
+        const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (side / 64)));
+        for (let i = 0; i <= n; i++) {
+          const t = i / n;
+          if (dPt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t) === 0) return 0;
+        }
+      }
+      let d = Math.min(dPt(a.x, a.y), dPt(b.x, b.y));
+      const vx = b.x - a.x, vy = b.y - a.y, L2 = vx * vx + vy * vy;
+      if (L2 > 0) {
+        [[0, 0], [side, 0], [0, side], [side, side]].forEach(([cx, cy]) => {
+          const t = Math.max(0, Math.min(1, ((cx - a.x) * vx + (cy - a.y) * vy) / L2));
+          d = Math.min(d, Math.hypot(a.x + vx * t - cx, a.y + vy * t - cy));
+        });
+      }
+      return d;
+    }
+    const dot = P.length === 1 || (P.length === 2 && Math.hypot(P[1].x - P[0].x, P[1].y - P[0].y) * k < 1);
+    if (dot) return dPt(P[0].x, P[0].y) * k <= f(P[0]) * base * 0.62 - INK_MIN;
+    for (let i = 1; i < P.length; i++) {
+      const half = ((f(P[i - 1]) + f(P[i])) / 2) * base * 0.5;
+      if (dSeg(P[i - 1], P[i]) * k <= half - INK_MIN) return true;
+    }
+    return false;
+  }
 
   // Line width (css px) of an unpressured stroke in a box of the given side.
   function baseWidth(sizePx) { return Math.max(3, sizePx * 0.034); }
@@ -215,10 +399,49 @@
     const touchEl = o.touchEl || surface;
     let active = null;
     watchPen(doc);
+    watchTouches(doc);
 
     function drawing(on) {
+      // record the scroll positions before html.pad-drawing changes any scroller's overflow (css)
+      if (on) pinScroll(true);
       setDrawing(doc, on);
       touchEl.classList.toggle('is-drawing', on);
+      if (!on) { pinScroll(false); holdWhileTouched(doc); }
+    }
+
+    /* While a stroke is being written the page and every scroller around the box are pinned: whatever scrolls them
+     * — a palm pan that began before the stroke, a browser's hover-scroll at the screen edge (S Pen Air view),
+     * momentum — is undone at once, so the box cannot move under the pen (its rect is re-read on every move). */
+    const win = doc.defaultView || root;
+    let pins = null;
+    const restore = () => {
+      if (!pins) return;
+      for (const p of pins) {
+        if (p.el === win) {
+          if (win.scrollX !== p.x || win.scrollY !== p.y) {
+            try { win.scrollTo({ left: p.x, top: p.y, behavior: 'instant' }); } catch (e) { win.scrollTo(p.x, p.y); }
+          }
+        } else if (p.el.scrollLeft !== p.x || p.el.scrollTop !== p.y) {
+          p.el.scrollLeft = p.x;
+          p.el.scrollTop = p.y;
+        }
+      }
+    };
+    const scrollOpts = { capture: true, passive: true };
+    function pinScroll(on) {
+      if (on && !pins && active) {
+        pins = [{ el: win, x: win.scrollX, y: win.scrollY }];
+        for (let a = active.target.el.parentElement; a && a !== doc.body && a !== doc.documentElement; a = a.parentElement) {
+          const cs = win.getComputedStyle(a);
+          if (/auto|scroll|hidden/.test(cs.overflowY + ' ' + cs.overflowX) && (a.scrollHeight > a.clientHeight || a.scrollWidth > a.clientWidth)) {
+            pins.push({ el: a, x: a.scrollLeft, y: a.scrollTop });
+          }
+        }
+        doc.addEventListener('scroll', restore, scrollOpts);
+      } else if (!on && pins) {
+        pins = null;
+        doc.removeEventListener('scroll', restore, scrollOpts);
+      }
     }
 
     // A touch stroke is the writing hand's palm once a pen is known to be around (pen-only mode).
@@ -280,7 +503,9 @@
       if (e.cancelable) e.preventDefault();
       // The pen showed up (hovering) while this touch stroke was going on: it is the palm, drop it.
       if (palmLike(active)) { cancel(); return; }
-      // The box may have moved since pointerdown (smooth scroll, rotation, on-screen keyboard): re-read it.
+      // Undo any scroll first (pinScroll), so this sample is measured against the pinned box; then re-read the box,
+      // which may still have moved since pointerdown (rotation, on-screen keyboard).
+      restore();
       active.target.refresh();
       let evs = null;
       try { evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null; } catch (err) { evs = null; }
@@ -291,7 +516,7 @@
 
     function finish(e, cancelled) {
       if (!active || (e && e.pointerId !== active.id)) return;
-      if (e && !cancelled && e.type === 'pointerup') { active.target.refresh(); addPoint(e); }
+      if (e && !cancelled && e.type === 'pointerup') { restore(); active.target.refresh(); addPoint(e); }
       const s = active;
       active = null;
       drawing(false);
@@ -328,7 +553,7 @@
   }
 
   const Ink = {
-    hasSeenPen: () => penSeen, onPenSeen, watchPen, setDrawing, pixelRatio, baseWidth, widthFactor, drawStroke,
+    hasSeenPen: () => penSeen, onPenSeen, watchPen, setDrawing, hold, setLive, nearZone, nearSync, inksBox, pixelRatio, baseWidth, widthFactor, drawStroke,
     fitCanvas, inkColor, observeSize, watchScheme, tracker,
   };
 
@@ -378,6 +603,7 @@
         enabled = !!v;
         wrap.classList.toggle('is-disabled', !enabled);
         if (!enabled) pen.cancel();
+        syncHolds();
       },
       isEnabled: () => enabled,
       getBoxSize: () => size,
@@ -454,16 +680,36 @@
       toLocal: (ev) => [ev.clientX - rect.left, ev.clientY - rect.top],
     };
 
-    pen = tracker(canvas, {
+    // On the wrap, not the canvas: the wrap's ::before ring (css/app.css) reaches a few px past the box, so a stroke
+    // begun at the very edge writes instead of panning the page. The canvas fills the rest of the wrap.
+
+    pen = tracker(wrap, {
       enabled: () => enabled,
       penOnly: () => penOnly,
       pressure: !!opts.pressure,
       touchEl: wrap,
+      guard: () => enabled,   // after grading the page may scroll over the box again (css .pad.is-disabled)
       hit() { if (measure().changed) schedule(); return box; },
       update: schedule,
-      commit(s) { strokes.push({ pts: s.pts, type: s.type }); schedule(); notify('stroke'); },
+      commit(s) {
+        // Begun in the ring and never inside the box, ink included (a tap or a flick beside it): not a stroke.
+        if (!inksBox(s.pts, size, 1)) { schedule(); return; }
+        strokes.push({ pts: s.pts, type: s.type });
+        schedule();
+        notify('stroke');
+      },
       drop: schedule,
     });
+
+    // A pen near this block pins the page (html.pad-pen-near); while the pad takes input the page doesn't
+    // rubber-band or drag a host page (html.pad-live). See nearZone() / setLive().
+    const zone = opts.penZone === undefined ? host.parentElement : opts.penZone;
+    nearZone(doc, api, zone, () => enabled && !destroyed);
+    function syncHolds() {
+      setLive(doc, api, enabled && !destroyed);
+      nearSync(doc);
+    }
+    syncHolds();
 
     /* ---------------------------------------------------------- editing */
 
@@ -497,6 +743,8 @@
     function destroy() {
       destroyed = true;
       pen.destroy();
+      nearZone(doc, api, null);
+      syncHolds();
       stopSize();
       stopScheme();
       if (rafId && win.cancelAnimationFrame) win.cancelAnimationFrame(rafId);
