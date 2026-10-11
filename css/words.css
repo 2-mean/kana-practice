@@ -167,7 +167,6 @@
   .wpre-item { grid-template-columns: minmax(0, 1fr); }
   .wpre-acts .btn { width: 100%; justify-content: center; }
 }
-.wio-presets { margin-bottom: 16px; }
 
 /* several readings (何 なに / なん) */
 .wface-alts { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 2px; }
@@ -249,16 +248,102 @@
 
 /* ------------------------------------------------------------------ 가져오기 · 내보내기 */
 
-.wio-page { display: grid; gap: 4px; }
-.wio-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 880px) { .wio-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; } }
-.wio-sec { display: grid; gap: 10px; }
+/* one column of cards: AI로 단어 파일 만들기 · 가져오기 (+ 정리해 둔 단어 목록) · 중복 정리 · 내보내기 */
+.wio-page { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); max-width: 56rem; }
+.wio-page > .page-head { margin-bottom: 0; }
+.wio-sec { display: grid; gap: 10px; min-width: 0; }
 .wio-ta { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.82rem; line-height: 1.45; min-height: 10rem; }
-.wio-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.wio-prompt { font-family: var(--font-ui); font-size: 0.9rem; min-height: 12rem; color: var(--ink-2); }
+.wio-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .wio-msg { color: var(--ink-2); font-size: 0.92rem; display: grid; gap: 4px; }
 .wio-msg:empty { display: none; }
-.wio-msg .is-ok { color: var(--ok); }
-.wio-errs { margin: 0; padding-left: 1.2em; color: var(--ng); font-size: 0.88rem; }
+.wio-msg .is-ok, .wio-result .is-ok { color: var(--ok); }
+.wio-steps { margin: 0; padding-left: 1.4em; display: grid; gap: 4px; color: var(--ink-2); line-height: 1.55; }
+.wio-more { margin-top: 2px; }
+.wio-code {
+  margin: 8px 0 0; padding: 10px 12px; max-height: 18rem; overflow: auto;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.78rem; line-height: 1.5;
+  white-space: pre; color: var(--ink); background: var(--box); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.wio-code:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+/* 가져오기: file / drop / paste → preview → apply */
+.wio-drop {
+  display: grid; gap: 8px; padding: 12px; border: 2px dashed var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--card-2); transition: border-color 0.15s, background-color 0.15s;
+}
+.wio-import.is-drag .wio-drop { border-color: var(--shu); background: var(--shu-soft); }
+.wio-drop-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.wio-drop-or { color: var(--ink-3); font-size: 0.9rem; }
+@media (pointer: coarse) { .wio-drop-or { display: none; } }
+.wio-file-name { color: var(--ink-2); font-size: 0.9rem; overflow-wrap: anywhere; }
+.wio-label { color: var(--ink-2); font-size: 0.92rem; }
+.wio-drop .wio-ta { background: var(--box); min-height: 8rem; }
+.wio-mode { margin: 4px 0 0; }
+.wio-mode-hint { margin-top: -6px; }
+.wio-preview { display: grid; gap: 8px; min-width: 0; }
+.wio-preview:empty { display: none; }
+.wio-err { color: var(--ng); background: var(--ng-bg); border: 1px solid var(--ng-line); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 0.92rem; }
+.wio-result { display: grid; gap: 8px; }
+.wio-result:empty { display: none; }
+.wio-count { color: var(--ink-2); font-size: 0.92rem; }
+.wio-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.wio-chip {
+  display: inline-flex; align-items: baseline; gap: 4px; padding: 4px 10px; border-radius: 999px; font-size: 0.88rem;
+  border: 1px solid var(--line-strong); background: var(--card); color: var(--ink-2);
+}
+.wio-chip b { font-weight: 700; color: var(--ink); }
+.wio-chip.is-add { background: var(--ok-bg); border-color: var(--ok-line); }
+.wio-chip.is-update { background: var(--hira-bg); border-color: var(--hira-line); }
+.wio-chip.is-dup { background: var(--tri-bg); border-color: var(--tri-line); }
+.wio-chip.is-problem { background: var(--ng-bg); border-color: var(--ng-line); }
+.wio-chip.is-zero { background: var(--card); border-color: var(--line); opacity: 0.75; }
+.wio-notes, .wio-cat { margin-top: 0; padding-top: 8px; }
+.wio-notes > summary, .wio-cat > summary { font-size: 0.95rem; }
+.wio-note-list { margin: 0; padding-left: 1.2em; display: grid; gap: 2px; color: var(--ink-2); font-size: 0.88rem; }
+.wio-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.wio-rows > li {
+  display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; row-gap: 2px;
+  padding: 6px 2px; border-bottom: 1px solid var(--line); font-size: 0.92rem; min-width: 0;
+}
+.wio-rows > li:last-child { border-bottom: 0; }
+.wio-idx { min-width: 2.2em; color: var(--ink-3); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.wio-face { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; min-width: 0; overflow-wrap: anywhere; }
+.wio-kanji { font-family: var(--font-kana); font-size: 1.15rem; color: var(--ink); }
+.wio-kana { font-family: var(--font-kana); font-size: 1.05rem; color: var(--ink); }
+.wio-kana.is-sub { font-size: 0.92rem; color: var(--ink-2); }
+.wio-m { color: var(--ink-2); overflow-wrap: anywhere; }
+.wio-change { flex-basis: 100%; padding-left: calc(2.2em + 6px); color: var(--hira); font-size: 0.86rem; overflow-wrap: anywhere; }
+.wio-hint, .wio-warn { flex-basis: 100%; padding-left: calc(2.2em + 6px); color: var(--ink-3); font-size: 0.84rem; overflow-wrap: anywhere; }
+.wio-warn { color: var(--tri); }
+.wio-err-msg { color: var(--ng); overflow-wrap: anywhere; }
+.wio-more-n { color: var(--ink-3); font-size: 0.86rem; padding: 4px 2px; }
+.wio-problems > summary { color: var(--ng); }
+.wio-problems .wio-acts { margin-top: 8px; }
+.wio-clip { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
+.wio-presets { display: grid; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 1px dashed var(--line-strong); }
+.wio-sub { font-family: var(--font-head); font-size: 1.02rem; color: var(--ink); }
+
+/* 중복 정리 */
+.wio-dup-body { display: grid; gap: 10px; }
+.wio-none { color: var(--ink-3); font-size: 0.92rem; }
+.wdup-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wdup-item {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: start;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--card-2);
+}
+.wdup-item.is-maybe { border-style: dashed; background: var(--card); }
+.wdup-cb { width: 22px; height: 22px; margin: 4px 0 0; accent-color: var(--ink); cursor: pointer; }
+.wdup-label { display: grid; gap: 4px; cursor: pointer; min-width: 0; }
+.wdup-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.wdup-n { color: var(--ink-3); font-size: 0.86rem; }
+.wdup-entries { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 0.9rem; }
+.wdup-entries > li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; }
+.wdup-keep { font-size: 0.74rem; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line-strong); color: var(--ink-3); }
+.wdup-entries > li:first-child .wdup-keep { color: var(--ok); border-color: var(--ok-line); background: var(--ok-bg); }
+.wdup-m { color: var(--ink-2); overflow-wrap: anywhere; }
+.wdup-stat { color: var(--ink-3); font-size: 0.84rem; }
+.wdup-result { color: var(--hira); font-size: 0.86rem; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------------ practice setup */
 

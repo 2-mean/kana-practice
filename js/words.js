@@ -4,10 +4,13 @@
  * Uses (globals): KanaApp, KanaStore (words list + per-entry stats), KanaText (validation, readings, answer
  * checks), Quiz (weighted sampling, 무한 모드 scheduling), KanaRecognizer (kana / extra cells, box mode),
  * KanjiJudge (kanji cells; KanjiJudge.load() pulls js/kanji-data.js in on first need), GridPad (원고지 pad),
- * KANA_DATA, KANA_WORD_PRESETS (js/word-presets.js: the learner's word list, one-tap 불러오기 — optional).
+ * KANA_DATA, KANA_WORD_PRESETS (js/word-presets.js: the learner's word list, one-tap 불러오기 — optional), WordIO
+ * (js/wordio.js: the word file format, the AI prompt, reading files leniently, the identity / merge rules —
+ * docs/WORDS-FORMAT.md).
  * Styles: css/words.css (tokens of css/app.css only) plus app.css / gridpad.css classes.
  *
- * Views (KanaApp.go('words', { view })): list (default, #words) · edit ({ id? }) · io (가져오기·내보내기) ·
+ * Views (KanaApp.go('words', { view })): list (default, #words) · edit ({ id? }) · io (가져오기·내보내기: AI 프롬프트,
+ *   파일 · 끌어다 놓기 · 붙여 넣기 → 미리보기 → 가져오기 / 되돌리기, 중복 정리, 내보내기 — SPEC-words O) ·
  *   setup (연습 설정) · practice (a running practice, module state S.run) · result (S.lastRun).
  * Practice modes:
  *   read  — 단어 읽기: kana shown → reading typed (romaji / 한글) → KanaText.checkReading, per-segment marks;
@@ -71,8 +74,9 @@
 
   /* =================================================================== dependencies (looked up lazily) */
   const req = (p) => { if (!isNode) return null; try { return require(p); } catch (e) { return null; } };
-  let txN = null, qzN = null, kdN = null, kaN = null;
+  let txN = null, qzN = null, kdN = null, kaN = null, ioN = null;
   const TX = () => root.KanaText || txN || (txN = req('./romaji.js'));
+  const IOX = () => root.WordIO || ioN || (ioN = req('./wordio.js'));
   const QZ = () => root.Quiz || qzN || (qzN = req('./quiz.js'));
   const KD = () => root.KANA_DATA || kdN || (kdN = req('./kana-data.js'));
   const KA = () => root.KanaAlign || kaN || (kaN = req('./align.js'));
@@ -1079,12 +1083,19 @@
 
   /* ------------------------------------------------------------------ presets (KANA_WORD_PRESETS, SPEC-words K) */
 
-  // How many of a preset's words the list already has (same id, or same kana + kanji — what importJSON matches).
+  // How many of a preset's words the list already has: the same id, or the same word by WordIO's identity rule
+  // (学生/がくせい ≡ がくせい, テスト ≡ てすと — what KanaStore.words.applyImport merges into).
   function presetStatus(preset, list) {
-    const ids = new Set(), keys = new Set();
-    for (const e of list || []) { if (!e || e.deleted) continue; ids.add(e.id); keys.add(e.text + '\u0000' + (e.kanji || '')); }
+    const live = (list || []).filter((e) => e && !e.deleted);
+    const ids = new Set(live.map((e) => e.id));
+    const IO = IOX();
+    const words0 = (preset && Array.isArray(preset.words)) ? preset.words : [];
+    const index = IO ? IO.makeIndex(live, IO.kanjiReadings(words0)) : null;
+    const keys = new Set(live.map((e) => e.text + '\u0000' + (e.kanji || '')));
     const words = (preset && Array.isArray(preset.words)) ? preset.words : [];
-    const present = words.filter((w) => ids.has(w.id) || keys.has(w.text + '\u0000' + (w.kanji || ''))).length;
+    const present = words.filter((w) => ids.has(w.id) || (index
+      ? index.candidates(w).some((i) => IO.sameWord(w, live[i], index.ctx) === 'sure')
+      : keys.has(w.text + '\u0000' + (w.kanji || '')))).length;
     return { total: words.length, present, all: words.length > 0 && present === words.length };
   }
 
@@ -1104,6 +1115,31 @@
     if (!added && !bad) return { ok: true, text: '이미 모두 들어 있어요.' };
     if (!added) return { ok: false, text: '넣은 단어가 없어요.' + failed };
     return { ok: true, text: `${added}개를 추가했어요.` + (had ? ` (${had}개는 이미 있어요)` : '') + failed };
+  }
+
+  /* 가져오기 (docs/WORDS-FORMAT.md) — the Korean lines of the io view. */
+  // A planImport row's hint: an item added on its own although the book has a similar word.
+  function hintText(hint) {
+    if (!hint || !Array.isArray(hint.with) || !hint.with.length) return '';
+    const names = hint.with.slice(0, 3).map((e) => (e.kanji || e.text) + (e.meaning ? `(${displayMeaning(e)})` : '')).join(' · ');
+    if (hint.kind === 'ambiguous') return `같은 읽기의 단어가 여럿 있어서(${names}) 어느 것인지 몰라 따로 넣어요.`;
+    return `비슷한 단어가 이미 있어요: ${names} — 읽기나 뜻이 달라서 따로 넣어요. 같은 단어면 「중복 정리」에서 합칠 수 있어요.`;
+  }
+  // The applyImport result in one line.
+  function importResultMessage(res) {
+    const c = (res && res.counts) || { add: (res && res.added) || 0, update: (res && res.updated) || 0, same: 0, dup: 0, problem: ((res && res.errors) || []).length };
+    const parts = [];
+    if (c.add) parts.push(`새로 추가 ${c.add}개`);
+    if (c.update) parts.push(`업데이트 ${c.update}개`);
+    if (c.dup) parts.push(`중복 합침 ${c.dup}개`);
+    let m = c.add || c.update ? `가져왔어요 — ${parts.join(' · ')}.` : '새로 넣거나 바꿀 단어가 없어요.';
+    if (c.problem) m += ` 문제가 있는 ${c.problem}개는 넣지 않았어요.`;
+    return m;
+  }
+  function exportFileName(d) {
+    const t = d instanceof Date && !isNaN(d) ? d : new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    return `kana-words-${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}.json`;
   }
 
   // 다른 읽기 field of the edit form: readings split at / ／ , ， ; ； and, for a word, 、 (a sentence's 、 is part of the
@@ -1136,6 +1172,7 @@
     selectionTagsLine, selectionPref, selectionFromPref,
     FORMS, readingsOf, hiraganaOf, answerForms, defaultForm, resolveForm, formReadings,
     furiganaAll, readingsLine, foldKana, romajiToKanaAll, presetStatus, importPresetWords, presetMessage, altsFieldParse,
+    hintText, importResultMessage, exportFileName,
     HINTS, hintLadder, hintLabel, hintLevel, countHint, alignSlots, skipSlots, josaKo, formNote, answerTexts, recordableChars,
     kanjiDataMissing,
   };
@@ -1198,6 +1235,8 @@
     keypad: 'M4 6h16v12H4zM7 9h1M10.5 9h1M14 9h1M17 9h0M7 12h1M10.5 12h1M14 12h1M8 15h8',
     play: 'M8 5.5v13l10.5-6.5z',
     chev: 'M6.5 9.5 12 15l5.5-5.5',
+    file: 'M6.5 3.5h7.5l4.5 4.5v12.5h-12zM14 3.5V8h4.5',
+    save: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14',
   };
   function icon(name) {
     const svg = sv('svg', { class: 'ic', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' });
@@ -1359,6 +1398,7 @@
     S.syncLine = null;
     S.renderList = null;
     S.updateSel = null;
+    S.ioRefresh = null;
     if (view !== 'edit') S.editDirty = false;
     loadSel();
     if (!Store) {
@@ -1404,6 +1444,7 @@
   function onStoreChange(c) {
     if (!c || !S.mounted) return;
     if (c.status) updateSync();
+    if (c.words && S.view === 'io' && S.ioRefresh) S.ioRefresh();   // another tab / the cloud: export, 중복 정리, presets
     if (c.words && S.view === 'list') {
       if (S.renderList) S.renderList();
       else if (words().length) go('list');     // the empty state when words arrive (another tab, a first cloud snapshot)
@@ -1643,23 +1684,31 @@
     const list = presetList();
     if (!list.length) return null;
     const box = h('div', { class: 'wpre' + (where === 'empty' ? ' is-empty' : '') });
-    box.appendChild(h('p', { class: 'wpre-lead' }, where === 'empty' ? '정리해 둔 단어 목록을 한 번에 넣을 수 있어요.' : '정리해 둔 단어 목록을 한 번에 넣어요. 이미 있는 단어는 건너뛰어요.'));
+    box.appendChild(h('p', { class: 'wpre-lead' }, where === 'empty' ? '정리해 둔 단어 목록을 한 번에 넣을 수 있어요.' : '정리해 둔 단어 목록을 한 번에 넣어요. 이미 있는 단어는 건너뛰거나 합쳐요.'));
     const ul = h('ul', { class: 'wpre-list' });
+    const updaters = [];
+    box.addEventListener('wpre-refresh', () => updaters.forEach((f) => f()));
     list.forEach((preset, k) => {
       const hid = uid('wpre-h');
       const msg = h('p', { class: 'wpre-msg', 'aria-live': 'polite' });
       const st = presetStatus(preset, words());
       const status = h('span', { class: 'wpre-status' }, st.all ? '모두 들어 있어요' : st.present ? `${st.present}개는 이미 있어요` : '');
+      const update = () => {
+        const s2 = presetStatus(preset, words());
+        status.textContent = s2.all ? '모두 들어 있어요' : s2.present ? `${s2.present}개는 이미 있어요` : '';
+        btn.classList.toggle('btn-primary', !s2.all);
+      };
+      updaters.push(update);
       const btn = h('button', { type: 'button', class: 'btn ' + (st.all ? '' : 'btn-primary'), 'aria-describedby': hid, 'data-preset': preset.id || '', 'data-autofocus': where === 'empty' && !k ? true : null, on: { click: () => {
-        const r = Store.words.importJSON({ format: 'kana-practice-words', v: 1, words: importPresetWords(preset, Date.now()) });
+        // the same path as 가져오기: a word already in the book (예시 学生, a kana-only がくせい …) is merged, not added again
+        const items = importPresetWords(preset, Date.now());
+        const r = Store.words.applyImport ? Store.words.applyImport(items, { mode: 'merge' }) : Store.words.importJSON({ format: 'kana-practice-words', v: 1, words: items });
         const m = presetMessage(r);
         toast(m.text);
         if (where === 'empty' && r.added) { go('list'); return; }
         msg.textContent = m.text;
         msg.classList.toggle('is-ok', m.ok);
-        const s2 = presetStatus(preset, words());
-        status.textContent = s2.all ? '모두 들어 있어요' : s2.present ? `${s2.present}개는 이미 있어요` : '';
-        btn.classList.toggle('btn-primary', !s2.all);
+        update();
         if (onDone) onDone(r);
       } } }, icon('io'), '불러오기');
       ul.appendChild(h('li', { class: 'wpre-item' },
@@ -2152,76 +2201,387 @@
 
   /* =================================================================== 가져오기 · 내보내기 */
 
+  /* Sections, in order (docs/WORDS-FORMAT.md):
+   *   AI로 단어 파일 만들기 — the prompt (WordIO.PROMPT) in a read-only box + 프롬프트 복사, a compact example.
+   *   가져오기 — 파일 선택 · 끌어다 놓기 (.json / .txt, several at once) · 붙여넣기 → a preview (KanaStore.words.planImport:
+   *     새로 추가 · 업데이트 · 그대로 · 중복 합침 · 문제, each listed; 문제 목록 복사 for the AI) → 가져오기 (applyImport) with
+   *     합치기 / 가져온 내용으로 덮어쓰기, then 되돌리기 until this screen is left. The learner's presets (불러오기) below.
+   *   중복 정리 — words.duplicates(): sure groups ticked, 'maybe' pairs unticked → words.mergeDuplicates, 되돌리기.
+   *   내보내기 — the export JSON + 복사하기, and 파일로 저장 where the page may start a download (not in a frame: the
+   *     claude.ai artifact viewer blocks downloads). */
   VIEWS.io = function (main) {
+    const IO = IOX();
+    const undoMsg = (u) => (u && u.stats ? ' 합친 연습 기록은 남은 단어에 그대로 있어요.' : '');
+
+    /* ---------------------------------------------------------------- 내보내기 */
     const exportTa = h('textarea', { class: 'w-input w-textarea wio-ta', id: 'wio-export', rows: 8, readonly: true, spellcheck: 'false', 'aria-describedby': 'wio-export-help' });
-    exportTa.value = Store.words.exportJSON();
+    const exportH = h('h2', { class: 'card-h', id: 'wio-ex-h' });
     const copyMsg = h('p', { class: 'wio-msg', 'aria-live': 'polite' });
     const copyBtn = h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => {
-      const text = exportTa.value;
-      const fallback = () => {
-        exportTa.focus();
-        exportTa.select();
-        let ok = false;
-        try { ok = !!(document.execCommand && document.execCommand('copy')); } catch (e) { ok = false; }
-        copyMsg.textContent = ok ? '복사했어요.' : '내용을 모두 선택해 두었어요. 복사(Ctrl+C, 또는 길게 눌러 복사)해 주세요.';
-      };
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(() => { copyMsg.textContent = '복사했어요. 다른 기기의 「가져오기」에 붙여 넣으세요.'; }, fallback);
-        } else fallback();
-      } catch (e) { fallback(); }
+      copyText(exportTa.value, exportTa, (ok) => { copyMsg.textContent = ok ? '복사했어요. 다른 기기의 「가져오기」에 붙여 넣으세요.' : '내용을 모두 선택해 두었어요. 복사(Ctrl+C, 또는 길게 눌러 복사)해 주세요.'; });
     } } }, icon('copy'), '복사하기');
+    const saveBtn = canDownload() ? h('button', { type: 'button', class: 'btn', on: { click: () => {
+      const ok = downloadText(exportTa.value, exportFileName(new Date()), 'application/json');
+      copyMsg.textContent = ok ? '파일로 저장했어요. 다른 기기에서 「파일 선택」으로 가져오면 돼요.' : '이 화면에서는 파일을 저장할 수 없어요. 복사하기를 써 주세요.';
+    } } }, icon('save'), '파일로 저장') : null;
 
-    const importTa = h('textarea', { class: 'w-input w-textarea wio-ta', id: 'wio-import', rows: 6, spellcheck: 'false', placeholder: '내보내기로 만든 내용을 여기에 붙여 넣으세요.', 'aria-describedby': 'wio-import-help' });
-    const importMsg = h('div', { class: 'wio-msg', 'aria-live': 'polite' });
-    const importBtn = h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => {
-      importMsg.textContent = '';
-      if (!importTa.value.trim()) { importMsg.textContent = '붙여 넣은 내용이 없어요.'; return; }
-      const r = Store.words.importJSON(importTa.value);
-      const parts = [];
-      if (r.added) parts.push(`${r.added}개를 새로 넣었어요`);
-      if (r.updated) parts.push(`${r.updated}개를 최신 내용으로 맞췄어요`);
-      if (r.skipped) parts.push(`${r.skipped}개는 이미 있어서 건너뛰었어요`);
-      const fatal = r.errors && r.errors.length && r.errors[0].index < 0;
-      if (parts.length || !fatal) importMsg.appendChild(h('p', { class: r.added || r.updated ? 'is-ok' : '' }, parts.length ? parts.join(' · ') + '.' : '가져온 단어가 없어요.'));
-      if (r.errors && r.errors.length) {
-        importMsg.appendChild(h('ul', { class: 'wio-errs' }, r.errors.slice(0, 8).map((er) => h('li', null, (er.index >= 0 ? `${er.index + 1}번째` + (er.text ? ` (${er.text})` : '') + ': ' : '') + er.message))));
-        if (r.errors.length > 8) importMsg.appendChild(h('p', null, `그 밖에 ${r.errors.length - 8}개 오류`));
-      }
-      if (r.added || r.updated) {
-        importTa.value = '';
-        exportTa.value = Store.words.exportJSON();
-        exportH.textContent = `내보내기 (${words().length}개)`;
-      }
-    } } }, '가져오기');
+    /* ---------------------------------------------------------------- AI로 단어 파일 만들기 */
+    const promptTa = h('textarea', { class: 'w-input w-textarea wio-ta wio-prompt', id: 'wio-prompt', rows: 9, readonly: true, spellcheck: 'false', 'aria-describedby': 'wio-ai-help' });
+    promptTa.value = IO ? IO.PROMPT : '';
+    const promptMsg = h('p', { class: 'wio-msg', 'aria-live': 'polite' });
+    const promptBtn = h('button', { type: 'button', class: 'btn btn-primary', 'data-copy': 'prompt', on: { click: () => {
+      copyText(promptTa.value, promptTa, (ok) => { promptMsg.textContent = ok ? '프롬프트를 복사했어요. AI 대화창에 붙여 넣고 단어 목록을 함께 주세요.' : '프롬프트를 모두 선택해 두었어요. 복사(Ctrl+C, 또는 길게 눌러 복사)해 주세요.'; });
+    } } }, icon('copy'), '프롬프트 복사');
+    const aiSec = h('section', { class: 'card wio-sec', 'aria-labelledby': 'wio-ai-h' },
+      h('h2', { class: 'card-h', id: 'wio-ai-h' }, 'AI로 단어 파일 만들기'),
+      h('ol', { class: 'wio-steps', id: 'wio-ai-help' },
+        h('li', null, '아래 프롬프트를 복사해서 ChatGPT · Claude · Gemini 같은 AI 대화창에 붙여 넣어요.'),
+        h('li', null, '같은 메시지에 단어 목록을 함께 줘요. 글 · 표 · 사진 · 파일 모두 돼요.'),
+        h('li', null, 'AI의 답(코드 블록)을 통째로 복사해 아래 「가져오기」에 붙여 넣거나, .json 파일로 저장해서 올려요.'),
+        h('li', null, '단어가 100개보다 많으면 AI가 100개씩 나눠 줘요. 「계속」이라고 해서 다음 답을 받고, 답마다 가져오거나 여러 답을 한꺼번에 붙여 넣어요.')),
+      h('label', { for: 'wio-prompt', class: 'sr-only' }, 'AI에 줄 프롬프트'),
+      promptTa,
+      h('div', { class: 'wio-acts' }, promptBtn), promptMsg,
+      h('details', { class: 'more wio-more' },
+        h('summary', null, '형식 예시 보기'),
+        h('p', { class: 'sec-note' }, rich('단어 하나에 text(가나 읽기, 꼭) · kanji(한자 표기) · alts(다른 읽기) · meaning(한국어 뜻, 꼭) · type(word / sentence) · tag(과 · 주제) · note(메모). 내보내기로 만든 파일도 같은 형식이에요.')),
+        h('pre', { class: 'wio-code', tabindex: '0', 'aria-label': '형식 예시 (JSON)' }, IO ? IO.EXAMPLE_JSON : '')));
 
-    const exportH = h('h2', { class: 'card-h', id: 'wio-ex-h' }, `내보내기 (${words().length}개)`);
+    /* ---------------------------------------------------------------- 가져오기 */
+    const fileIn = h('input', { type: 'file', id: 'wio-file', class: 'sr-only', accept: '.json,.txt,application/json,text/plain', multiple: true, tabindex: '-1', 'aria-hidden': 'true' });
+    const fileBtn = h('button', { type: 'button', class: 'btn', on: { click: () => fileIn.click() } }, icon('file'), '파일 선택');
+    const fileName = h('span', { class: 'wio-file-name', 'aria-live': 'polite' });
+    const importTa = h('textarea', { class: 'w-input w-textarea wio-ta', id: 'wio-import', rows: 6, spellcheck: 'false', placeholder: 'AI의 답이나 JSON을 여기에 붙여 넣으세요.', 'aria-describedby': 'wio-import-help' });
+    let mode = 'merge';
+    const modeSeg = segmented('wio-mode', '같은 단어가 이미 있으면', [
+      { value: 'merge', label: '합치기' }, { value: 'overwrite', label: '가져온 내용으로 덮어쓰기' },
+    ], mode, (v) => { mode = v; modeHint.textContent = MODE_HINT[v]; preview(); }, 'wio-mode');
+    const MODE_HINT = {
+      merge: '뜻 · 다른 읽기 · 메모는 모으고, 지금 단어장의 가나 · 태그는 그대로 둬요.',
+      overwrite: '가져온 파일에 적힌 칸으로 바꿔요. 비어 있는 칸과 연습 기록은 그대로예요.',
+    };
+    const modeHint = h('p', { class: 'seg-hint wio-mode-hint', 'aria-live': 'polite' }, MODE_HINT[mode]);
+    const previewEl = h('div', { class: 'wio-preview', 'aria-live': 'polite' });
+    const applyBtn = h('button', { type: 'button', class: 'btn btn-primary', disabled: true, on: { click: () => apply() } }, icon('io'), '가져오기');
+    const clearBtn = h('button', { type: 'button', class: 'btn btn-quiet', on: { click: () => { importTa.value = ''; fileName.textContent = ''; preview(); importTa.focus(); } } }, '지우기');
+    const resultEl = h('div', { class: 'wio-result', 'aria-live': 'polite' });
+    const drop = h('div', { class: 'wio-drop' },
+      h('div', { class: 'wio-drop-row' }, fileBtn, h('span', { class: 'wio-drop-or' }, '또는 파일을 여기에 끌어다 놓기'), fileName),
+      h('label', { for: 'wio-import', class: 'wio-label' }, '붙여 넣기'),
+      importTa);
+    let state = null;               // { read, plan, text }
+    let timer = 0;
+    onCleanup(() => clearTimeout(timer));
+
+    function preview() {
+      clearTimeout(timer);
+      const text = importTa.value;
+      previewEl.textContent = '';
+      state = null;
+      applyBtn.disabled = true;
+      setApplyLabel(null);
+      if (!text.trim()) return;
+      if (!IO) { previewEl.appendChild(h('p', { class: 'wio-err' }, '가져오기 모듈(js/wordio.js)을 불러오지 못했어요. 페이지를 새로 고쳐 주세요.')); return; }
+      resultEl.textContent = '';
+      const r = IO.read(text);
+      if (!r.ok) {
+        previewEl.appendChild(h('p', { class: 'wio-err', role: 'alert' }, r.error));
+        return;
+      }
+      const plan = Store.words.planImport(r.items, { mode });
+      state = { read: r, plan, text };
+      renderPreview(previewEl, r, plan);
+      const n = plan.counts.add + plan.counts.update;
+      applyBtn.disabled = n === 0;
+      setApplyLabel(plan);
+    }
+    function setApplyLabel(plan) {
+      applyBtn.textContent = '';
+      applyBtn.appendChild(icon('io'));
+      const c = plan && plan.counts;
+      applyBtn.appendChild(document.createTextNode(!c ? '가져오기' : c.add + c.update === 0 ? (c.same || c.dup ? '모두 이미 들어 있어요' : '가져올 수 있는 항목이 없어요')
+        : '가져오기' + ` (${[c.add ? `추가 ${c.add}` : '', c.update ? `업데이트 ${c.update}` : ''].filter(Boolean).join(' · ')})`));
+    }
+    function apply() {
+      if (!state) return;
+      // planned again on the current word book (another tab / the cloud may have changed it since the preview)
+      const res = Store.words.applyImport(state.read.items, { mode });
+      const msg = importResultMessage(res);
+      toast(msg);
+      importTa.value = '';
+      fileName.textContent = '';
+      previewEl.textContent = '';
+      state = null;
+      applyBtn.disabled = true;
+      setApplyLabel(null);
+      showResult(resultEl, msg, res.undo, res.problems && res.problems.length ? res.problems : null);
+      refresh();
+    }
+    function showResult(el, msg, undo, problems) {
+      el.textContent = '';
+      el.appendChild(h('p', { class: 'is-ok' }, msg));
+      if (problems) el.appendChild(problemBlock(problems, true));
+      if (undo) {
+        const btn = h('button', { type: 'button', class: 'btn btn-sm', on: { click: () => {
+          const r = Store.words.undo(undo);
+          el.textContent = '';
+          const m = r.ok ? '되돌렸어요.' + undoMsg(undo) : '되돌리지 못했어요.';
+          el.appendChild(h('p', null, m));
+          toast(m);
+          refresh();
+        } } }, icon('undo'), '되돌리기');
+        el.appendChild(h('div', { class: 'wio-acts' }, btn));
+      }
+    }
+
+    importTa.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(preview, 350); });
+    fileIn.addEventListener('change', () => { readFiles(fileIn.files); fileIn.value = ''; });
+    function readFiles(list) {
+      const files = Array.from(list || []);
+      if (!files.length) return;
+      const total = files.reduce((n, f) => n + (f.size || 0), 0);
+      if (total > 5 * 1024 * 1024) { previewEl.textContent = ''; previewEl.appendChild(h('p', { class: 'wio-err', role: 'alert' }, '파일이 너무 커요 (5 MB까지).')); return; }
+      Promise.all(files.map((f) => new Promise((resolve) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = () => resolve(null);
+        try { fr.readAsText(f, 'utf-8'); } catch (e) { resolve(null); }
+      }))).then((texts) => {
+        if (!S.mounted) return;
+        const okTexts = texts.filter((x) => x != null);
+        if (!okTexts.length) { previewEl.textContent = ''; previewEl.appendChild(h('p', { class: 'wio-err', role: 'alert' }, '파일을 읽지 못했어요.')); return; }
+        // several files: each in its own code block, so one file's text is never "prose" around another's JSON
+        importTa.value = okTexts.length === 1 ? okTexts[0]
+          : okTexts.map((x) => (/(^|\n)[ \t]*(```|~~~)/.test(x) ? x.trim() : '```json\n' + x.trim() + '\n```')).join('\n\n');
+        fileName.textContent = files.length === 1 ? files[0].name : `파일 ${files.length}개`;
+        preview();
+      });
+    }
+    const importSec = h('section', { class: 'card wio-sec wio-import', 'aria-labelledby': 'wio-im-h' },
+      h('h2', { class: 'card-h', id: 'wio-im-h' }, '가져오기'),
+      h('p', { class: 'sec-note', id: 'wio-import-help' }, 'AI가 만든 답, .json 파일, 다른 기기에서 내보낸 내용 모두 돼요. 넣기 전에 무엇이 바뀌는지 먼저 보여 줘요. 같은 단어는 하나로 합쳐요.'),
+      fileIn, drop, modeSeg, modeHint, previewEl,
+      h('div', { class: 'wio-acts' }, applyBtn, clearBtn), resultEl);
+    // drag and drop: files anywhere on the card (text dropped on the box is pasted as usual)
+    let dragDepth = 0;
+    const isFileDrag = (e) => { try { return Array.from(e.dataTransfer.types || []).includes('Files'); } catch (x) { return false; } };
+    importSec.addEventListener('dragenter', (e) => { if (!isFileDrag(e)) return; e.preventDefault(); dragDepth++; importSec.classList.add('is-drag'); });
+    importSec.addEventListener('dragover', (e) => { if (!isFileDrag(e)) return; e.preventDefault(); try { e.dataTransfer.dropEffect = 'copy'; } catch (x) { /* ignore */ } });
+    importSec.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) importSec.classList.remove('is-drag'); });
+    importSec.addEventListener('drop', (e) => {
+      dragDepth = 0;
+      importSec.classList.remove('is-drag');
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || !files.length) return;
+      e.preventDefault();
+      readFiles(files);
+    });
+    const presets = presetList().length ? presetBox('io', (r) => { if (r.added || r.updated) refresh(); }) : null;
+    if (presets) importSec.appendChild(h('div', { class: 'wio-presets' }, h('h3', { class: 'wio-sub' }, '정리해 둔 단어 목록'), presets));
+
+    /* ---------------------------------------------------------------- 중복 정리 */
+    const dupBody = h('div', { class: 'wio-dup-body' });
+    const dupResult = h('div', { class: 'wio-result', 'aria-live': 'polite' });
+    const dupSec = h('section', { class: 'card wio-sec', 'aria-labelledby': 'wio-dup-h' },
+      h('h2', { class: 'card-h', id: 'wio-dup-h' }, '중복 정리'),
+      h('p', { class: 'sec-note' }, '같은 단어가 두 번 이상 들어 있으면 하나로 합쳐요. 먼저 넣은 단어를 남기고 뜻 · 다른 읽기 · 메모 · 연습 기록을 모아요.'),
+      dupBody, dupResult);
+    function renderDups() {
+      dupBody.textContent = '';
+      const d = Store.words.duplicates();
+      if (!d.groups.length && !d.maybe.length) { dupBody.appendChild(h('p', { class: 'wio-none' }, '중복된 단어가 없어요.')); return; }
+      const boxes = [];
+      const item = (g, k) => {
+        const id = uid('wdup');
+        const cb = h('input', { type: 'checkbox', id, class: 'wdup-cb', checked: g.sure ? true : null, 'data-ids': g.ids.join(' ') });
+        cb.addEventListener('change', updateBtn);
+        boxes.push(cb);
+        const res = g.result;
+        return h('li', { class: 'wdup-item' + (g.sure ? '' : ' is-maybe') },
+          cb,
+          h('label', { for: id, class: 'wdup-label' },
+            h('span', { class: 'wdup-head' }, entryFace(res), h('span', { class: 'wdup-n' }, ` ${g.ids.length}개 → 1개`)),
+            h('ul', { class: 'wdup-entries' }, g.entries.map((e, i) => h('li', null,
+              h('span', { class: 'wdup-keep' }, i === 0 ? '남김' : '합침'), entryFace(e),
+              h('span', { class: 'wdup-m' }, ' ' + (displayMeaning(e) || '뜻 없음')),
+              e.tag ? h('span', { class: 'wl-tag' }, ' #' + e.tag) : null,
+              entrySummary(e).n ? h('span', { class: 'wdup-stat' }, ` · 기록 ${entrySummary(e).n}회`) : null))),
+            g.changes.length ? h('span', { class: 'wdup-result' }, '합치면: ' + g.changes.map(IO.describeChange).join(' · ')) : null));
+      };
+      const lists = [];
+      if (d.groups.length) {
+        lists.push(h('p', { class: 'wio-count' }, `같은 단어 ${d.groups.length}묶음을 찾았어요.`));
+        lists.push(h('ul', { class: 'wdup-list' }, d.groups.map(item)));
+      }
+      if (d.maybe.length) {
+        lists.push(h('p', { class: 'wio-count' }, `같은 단어일 수도 있는 것 ${d.maybe.length}묶음 — 읽기나 뜻이 달라서 고르지 않았어요. 같은 단어면 골라 주세요.`));
+        lists.push(h('ul', { class: 'wdup-list' }, d.maybe.map(item)));
+      }
+      const btn = h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => {
+        const sets = boxes.filter((b) => b.checked).map((b) => b.getAttribute('data-ids').split(' '));
+        if (!sets.length) return;
+        const r = Store.words.mergeDuplicates(sets);
+        // the practice selection follows the kept word
+        if (r.undo && r.undo.removed && r.undo.removed.length) {
+          const sel = new Set(S.selected);
+          let touched = false;
+          for (const x of r.undo.removed) if (sel.has(x.id)) { sel.delete(x.id); sel.add(x.keep); touched = true; }
+          if (touched) setSelected(sel);
+        }
+        const msg = r.merged ? `${r.merged}묶음을 합쳤어요 (항목 ${r.removed}개를 정리했어요).` : '합친 단어가 없어요.';
+        toast(msg);
+        refresh();
+        showResult(dupResult, msg, r.undo, null);
+      } } }, '선택한 묶음 합치기');
+      function updateBtn() {
+        const n = boxes.filter((b) => b.checked).length;
+        btn.disabled = n === 0;
+        btn.textContent = n ? `선택한 ${n}묶음 합치기` : '합칠 묶음을 골라 주세요';
+      }
+      lists.forEach((x) => dupBody.appendChild(x));
+      dupBody.appendChild(h('div', { class: 'wio-acts' }, btn));
+      updateBtn();
+    }
+
+    function refresh() {
+      exportTa.value = Store.words.exportJSON();
+      exportH.textContent = `내보내기 (${words().length}개)`;
+      renderDups();
+      if (presets) presets.dispatchEvent(new CustomEvent('wpre-refresh'));
+    }
+
+    const exportSec = h('section', { class: 'card wio-sec', 'aria-labelledby': 'wio-ex-h' },
+      exportH,
+      h('p', { class: 'sec-note', id: 'wio-export-help' }, '다른 기기나 브라우저로 옮길 때 써요. 복사해서 그곳의 「가져오기」에 붙여 넣거나 파일로 옮기세요. 단어마다 연습 기록도 함께 옮겨지고, 두 번 세지 않아요.'),
+      h('label', { for: 'wio-export', class: 'sr-only' }, '내보낸 단어장 (JSON)'),
+      exportTa,
+      h('div', { class: 'wio-acts' }, copyBtn, saveBtn), copyMsg);
+
     main.appendChild(h('div', { class: 'wio-page' },
       h('header', { class: 'page-head' },
         h('button', { type: 'button', class: 'btn btn-sm btn-quiet wf-back', on: { click: () => go('list') } }, icon('back'), '단어장'),
         h('h1', { class: 'page-title' }, '가져오기 · 내보내기'),
-        h('p', { class: 'page-sub' }, '파일 없이 글(JSON)로 옮겨요. 다른 기기나 브라우저로 단어장을 옮길 때 써요.')),
-      presetList().length ? h('section', { class: 'card wio-sec wio-presets', 'aria-labelledby': 'wio-pre-h' },
-        h('h2', { class: 'card-h', id: 'wio-pre-h' }, '단어 목록 불러오기'),
-        presetBox('io', (r) => {
-          if (!r.added && !r.updated) return;
-          exportTa.value = Store.words.exportJSON();
-          exportH.textContent = `내보내기 (${words().length}개)`;
-        })) : null,
-      h('div', { class: 'wio-grid' },
-        h('section', { class: 'card wio-sec', 'aria-labelledby': 'wio-ex-h' },
-          exportH,
-          h('p', { class: 'sec-note', id: 'wio-export-help' }, '아래 내용을 복사해서 다른 곳의 「가져오기」에 붙여 넣으세요. 단어마다 연습 기록도 함께 옮겨져요.'),
-          h('label', { for: 'wio-export', class: 'sr-only' }, '내보낸 단어장 (JSON)'),
-          exportTa,
-          h('div', { class: 'wio-acts' }, copyBtn), copyMsg),
-        h('section', { class: 'card wio-sec', 'aria-labelledby': 'wio-im-h' },
-          h('h2', { class: 'card-h', id: 'wio-im-h' }, '가져오기'),
-          h('p', { class: 'sec-note', id: 'wio-import-help' }, '같은 단어(같은 id)는 더 최근에 고친 쪽으로 맞추고, 연습 기록은 두 번 세지 않아요.'),
-          h('label', { for: 'wio-import', class: 'sr-only' }, '가져올 단어장 (JSON)'),
-          importTa,
-          h('div', { class: 'wio-acts' }, importBtn), importMsg))));
+        h('p', { class: 'page-sub' }, 'AI로 만든 단어 파일을 한 번에 넣고, 이 단어장을 다른 기기로 옮겨요.')),
+      aiSec, importSec, dupSec, exportSec));
+    refresh();
+    S.ioRefresh = refresh;
   };
+
+  // A content object (planImport row, duplicates result, a list entry) → kanji + kana (+ other readings) in the
+  // textbook face.
+  function entryFace(c) {
+    const alts = Array.isArray(c.alts) && c.alts.length ? ' / ' + c.alts.join(' / ') : '';
+    return h('span', { class: 'wio-face' },
+      c.kanji ? jp(c.kanji, 'wio-kanji') : null, c.kanji ? ' ' : null,
+      jp((c.text || '') + alts, c.kanji ? 'wio-kana is-sub' : 'wio-kana'));
+  }
+
+  // The preview of a planned import: what was read leniently, the counts, and the rows by kind.
+  function renderPreview(el, read, plan) {
+    const IO = IOX();
+    const c = plan.counts;
+    if (read.notes.length) {
+      el.appendChild(h('details', { class: 'more wio-notes', open: read.notes.length <= 3 ? true : null },
+        h('summary', null, `읽으면서 고친 것 · 확인할 것 ${read.notes.length}가지`),
+        h('ul', { class: 'wio-note-list' }, read.notes.map((n) => h('li', null, n)))));
+    }
+    el.appendChild(h('p', { class: 'wio-count' }, `${read.count}개 항목을 읽었어요.`));
+    const chips = h('ul', { class: 'wio-chips', 'aria-label': '미리보기 요약' },
+      [['add', '새로 추가', c.add], ['update', '업데이트', c.update], ['same', '그대로', c.same], ['dup', '중복 합침', c.dup], ['problem', '문제', c.problem]]
+        .map(([k, label, n]) => h('li', { class: 'wio-chip is-' + k + (n ? '' : ' is-zero') }, label + ' ', h('b', null, String(n)))));
+    el.appendChild(chips);
+    const MAX = 60;
+    const section = (title, rows, render, open) => {
+      if (!rows.length) return;
+      const ul = h('ul', { class: 'wio-rows' }, rows.slice(0, MAX).map(render));
+      el.appendChild(h('details', { class: 'more wio-cat', open: open ? true : null },
+        h('summary', null, `${title} ${rows.length}`), ul,
+        rows.length > MAX ? h('p', { class: 'wio-more-n' }, `그 밖에 ${rows.length - MAX}개`) : null));
+    };
+    const meaning = (x) => h('span', { class: 'wio-m' }, ' ' + (displayMeaning(x) || '뜻 없음'));
+    const tag = (x) => (x.tag ? h('span', { class: 'wl-tag' }, ' #' + x.tag) : null);
+    const droppedLine = (r) => {
+      const d = r.dropped || {};
+      const parts = [];
+      if (d.alts && d.alts.length) parts.push(`다른 읽기는 5개까지라 ${d.alts.join(' / ')}는 넣지 못했어요`);
+      if (d.meaning && d.meaning.length) parts.push(`뜻이 너무 길어서 ${d.meaning.join(', ')}는 넣지 못했어요`);
+      if (d.note) parts.push('메모가 너무 길어서 가져온 메모는 넣지 못했어요');
+      return parts.length ? h('span', { class: 'wio-warn' }, parts.join(' · ')) : null;
+    };
+    const rows = plan.rows;
+    section('새로 추가', rows.filter((r) => r.action === 'add'), (r) => h('li', null,
+      h('span', { class: 'wio-idx' }, `${r.index + 1}`), entryFace(r.content), meaning(r.content), tag(r.content),
+      r.hint ? h('span', { class: 'wio-hint' }, hintText(r.hint)) : null, droppedLine(r)), false);
+    section('업데이트', rows.filter((r) => r.action === 'update'), (r) => h('li', null,
+      h('span', { class: 'wio-idx' }, `${r.index + 1}`), entryFace(r.content), meaning(r.content),
+      h('span', { class: 'wio-change' }, r.changes.map(IO.describeChange).concat(r.stats ? ['연습 기록 합침'] : []).join(' · ')), droppedLine(r)), true);
+    section('그대로', rows.filter((r) => r.action === 'same'), (r) => h('li', null,
+      h('span', { class: 'wio-idx' }, `${r.index + 1}`), entryFace(r.content), meaning(r.content), h('span', { class: 'wio-hint' }, '이미 똑같이 들어 있어요')), false);
+    const dupRows = [];
+    for (const r of rows) for (const d of r.dups) dupRows.push({ d, r });
+    section('중복 합침', dupRows, ({ d, r }) => h('li', null,
+      h('span', { class: 'wio-idx' }, `${d.index + 1}`), entryFace(d), h('span', { class: 'wio-hint' }, ` → ${r.index + 1}번째 항목과 같은 단어라 하나로 합쳤어요`)), false);
+    if (plan.problems.length) el.appendChild(problemBlock(plan.problems, false));
+  }
+
+  // 문제 목록: the reasons in Korean + 문제 목록 복사 (a text to paste back to the AI).
+  function problemBlock(problems, afterImport) {
+    const IO = IOX();
+    const msg = h('p', { class: 'wio-msg', 'aria-live': 'polite' });
+    const copy = h('button', { type: 'button', class: 'btn btn-sm', on: { click: () => {
+      copyText(IO.problemsText(problems), null, (ok) => { msg.textContent = ok ? '문제 목록을 복사했어요. AI에게 붙여 넣으면 고친 JSON을 다시 만들어 줘요.' : '복사하지 못했어요. 아래 내용을 직접 선택해서 복사해 주세요.'; if (!ok) msg.appendChild(h('textarea', { class: 'w-input w-textarea wio-ta', rows: 4, readonly: true }, IO.problemsText(problems))); });
+    } } }, icon('copy'), '문제 목록 복사');
+    const MAX = 60;
+    // words that do not fit (the word book is full) are one line, not a problem for the AI
+    const full = problems.filter((p) => p.kind === 'limit');
+    const rest = problems.filter((p) => p.kind !== 'limit');
+    return h('details', { class: 'more wio-cat wio-problems', open: true },
+      h('summary', null, `${afterImport ? '넣지 못한 항목' : '문제'} ${problems.length}`),
+      full.length ? h('p', { class: 'wio-err-msg' }, `단어장은 ${(Store.LIMITS && Store.LIMITS.words) || 2000}개까지라 ${full.length}개(${full[0].index + 1}번째부터)는 ${afterImport ? '넣지 못했어요' : '넣을 수 없어요'}. 쓰지 않는 단어를 지우고 다시 가져와 주세요.`) : null,
+      rest.length ? h('ul', { class: 'wio-rows' }, rest.slice(0, MAX).map((p) => h('li', null,
+        h('span', { class: 'wio-idx' }, p.index >= 0 ? `${p.index + 1}` : '–'),
+        p.text ? jp(p.text, 'wio-kana') : null,
+        h('span', { class: 'wio-err-msg' }, ' ' + p.message)))) : null,
+      rest.length > MAX ? h('p', { class: 'wio-more-n' }, `그 밖에 ${rest.length - MAX}개`) : null,
+      rest.length ? h('div', { class: 'wio-acts' }, copy) : null, msg);
+  }
+
+  // Clipboard: navigator.clipboard inside the click, else select + execCommand('copy') on the box (or a hidden one).
+  function copyText(text, box, done) {
+    const fallback = () => {
+      let ok = false;
+      let el = box, tmp = null;
+      if (!el) {
+        tmp = el = h('textarea', { class: 'wio-clip', readonly: true, 'aria-hidden': 'true' });
+        el.value = text;
+        document.body.appendChild(el);
+      }
+      try { el.focus(); el.select(); ok = !!(document.execCommand && document.execCommand('copy')); } catch (e) { ok = false; }
+      if (tmp) tmp.remove();
+      done(ok);
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => done(true), fallback);
+      else fallback();
+    } catch (e) { fallback(); }
+  }
+
+  // Downloads work in a top-level page (GitHub Pages, file://, a local server); a framed page (the claude.ai artifact
+  // viewer's sandbox) cannot start one, so the button is not offered there.
+  function canDownload() {
+    try { if (root.self !== root.top) return false; } catch (e) { return false; }
+    try { return 'download' in document.createElement('a') && typeof Blob === 'function' && !!(root.URL && URL.createObjectURL); } catch (e) { return false; }
+  }
+  function downloadText(text, name, type) {
+    try {
+      const url = URL.createObjectURL(new Blob([text], { type: (type || 'text/plain') + ';charset=utf-8' }));
+      const a = h('a', { href: url, download: name, hidden: true });
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 1000);
+      return true;
+    } catch (e) { return false; }
+  }
 
   /* =================================================================== 연습 설정 */
 

@@ -36,6 +36,10 @@
  *       exportJSON words carry `stats` (totals) and `tally` (per device); importJSON joins tallies slot by slot
  *       (re-importing, or importing on a device that already synced part of them, never counts twice) and falls
  *       back to `stats` for files without a tally.
+ *   KanaStore.words.planImport(items, { mode: 'merge'|'overwrite' }) → the preview of an import of WordIO.read(…).items:
+ *       { counts: { add, update, same, dup, problem }, rows, problems }; applyImport(items, opts) applies the same plan
+ *       (+ added / updated / skipped / errors and an `undo` record). words.duplicates() → { groups, maybe } (중복 정리);
+ *       words.mergeDuplicates([[id, …], …]) → { merged, removed, undo }; words.undo(record). docs/WORDS-FORMAT.md.
  *   KanaStore.create(env) → an independent store (tests; env can inject storage, claude, clock, timers, rng).
  *
  * Entry (as returned): { id, text, kanji, alts?, source?, meaning, reading, note, type:'word'|'sentence', tag, createdAt, updatedAt,
@@ -1317,6 +1321,321 @@
       return res;
     }
 
+    /* -------------------------------------------------------------- 가져오기 · 중복 정리 (docs/WORDS-FORMAT.md)
+     * planImport / applyImport take WordIO.read(...).items (canonical inputs; _index = place in the file, _raw = as
+     * written) and run the same code: validate → group the file's own duplicates (WordIO.groupEntries) → match each
+     * group against the book (same live id first, then WordIO.findTarget) → merge (WordIO.mergeContent) or add. The
+     * plan is exact (tallies included), so the preview and the result always agree. Every write goes through the
+     * paths add / update / remove use (LWW timestamps, touchWord → local save + cloud doc).
+     * Stats: a source item with the target's own id (an export of this book) joins slot by slot, as importJSON does; an
+     * item with another id merges its slots as FROZEN slots (frozenKey(item id, slot)); a source whose id is another
+     * live entry of the book keeps its stats there. Files with totals only raise this device's slot by the excess. */
+    const wordio = () => env.WordIO || sibling('WordIO', './wordio.js');
+    const CONTENT_FIELDS = ['text', 'kanji', 'alts', 'meaning', 'reading', 'note', 'tag', 'type', 'source'];
+    function contentFields(e) {
+      const o = {};
+      for (const f of CONTENT_FIELDS) o[f] = f === 'alts' ? (Array.isArray(e && e.alts) ? e.alts.slice() : []) : (e && typeof e[f] === 'string' ? e[f] : '');
+      return o;
+    }
+    const sortLive = () => {
+      const live = [];
+      for (const e of words.values()) if (!e.deleted) live.push(e);
+      return live.sort((a, b) => (a.createdAt - b.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    };
+    const brief = (e) => ({ id: e.id, text: e.text, kanji: e.kanji || '', meaning: e.meaning || '', tag: e.tag || '' });
+
+    // Stats of word `src` merged into another entry live on as a frozen slot: no device ever writes it again, so the
+    // max-join of slots stays exact, and the same merge made on two devices (or an import repeated) gives the same key.
+    function frozenKey(src, slot) {
+      const s = String(src) + '/' + String(slot);
+      let a = 0x811c9dc5, b = 0x9747b28c;
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        a = Math.imul(a ^ c, 16777619) >>> 0;
+        b = Math.imul(b ^ c, 0x5bd1e995) >>> 0;
+        b = (b ^ (b >>> 15)) >>> 0;
+      }
+      return 'm' + a.toString(36) + b.toString(36);
+    }
+
+    // A source item's stats into `next` (the working copy of target id tid). liveFrozen: the frozen keys that would
+    // stand for stats of words still live in this book (another device merged them in, this one did not) — skipped,
+    // as those answers are counted in their own entry. → { changed, own } (own: this device's slot changed)
+    function absorbStats(next, src, tid, liveFrozen) {
+      const item = src.item;
+      const sid = typeof item.id === 'string' && ID_RE.test(item.id) ? item.id : null;
+      if (sid && sid !== tid && words.has(sid) && !words.get(sid).deleted) return { changed: false, own: false };
+      const dev = main.device;
+      const tally = isObj(item.tally) ? cleanTally(item.tally) : null;
+      if (tally && Object.keys(tally).length) {
+        let own = false;
+        for (const k of Object.keys(tally)) {
+          const key = !sid || sid === tid ? k : frozenKey(sid, k);
+          if (liveFrozen && liveFrozen.has(key)) continue;
+          if (key === dev) own = true;
+          next.tally[key] = joinSlot(next.tally[key] || null, tally[k]);
+        }
+        return { changed: true, own };
+      }
+      const stats = cleanSlot(item.stats);
+      if (slotEmpty(stats)) return { changed: false, own: false };
+      const extra = slotDelta(stats, sumSlots(next.tally));
+      if (slotEmpty(extra)) return { changed: false, own: false };
+      next.tally[dev] = slotAdd(next.tally[dev] || null, extra);
+      return { changed: true, own: true };
+    }
+
+    function importPlan(items, opts, apply) {
+      const IO = wordio();
+      const mode = isObj(opts) && opts.mode === 'overwrite' ? 'overwrite' : 'merge';
+      const res = { mode, rows: [], problems: [], counts: { add: 0, update: 0, same: 0, dup: 0, problem: 0 }, added: 0, updated: 0, skipped: 0, errors: [], undo: null };
+      const problem = (index, raw, message, text, kind) => {
+        res.problems.push(kind ? { index, raw, message, text: text || '', kind } : { index, raw, message, text: text || '' });
+        res.errors.push({ index, text: text || '', message });
+        res.counts.problem++;
+      };
+      if (!IO) { problem(-1, undefined, '가져오기 모듈(js/wordio.js)을 불러오지 못했어요.'); return res; }
+      const list = Array.isArray(items) ? items : [];
+      const valid = [];
+      list.forEach((item, k) => {
+        const index = isObj(item) && typeof item._index === 'number' ? item._index : k;
+        const raw = isObj(item) && '_raw' in item ? item._raw : item;
+        if (!isObj(item)) { problem(index, raw, '항목이 { … } 형식이 아니에요.'); return; }
+        if (typeof item._problem === 'string') { problem(index, raw, item._problem); return; }
+        const c = checkInput(item, null);
+        if (c.error !== undefined || !c.value) { problem(index, raw, IO.problemMessage(c, item), fieldStr(item.text)); return; }
+        const updatedAt = Math.min(num(item.updatedAt), now());
+        const sameId = typeof item.id === 'string' && words.has(item.id) && !words.get(item.id).deleted;
+        valid.push({ index, item, value: c.value, typeGiven: item.type === 'word' || item.type === 'sentence', updatedAt, sameId });
+      });
+      // 1. the file's own duplicates: one group per word, folded into its first item. An item carrying the id of a live
+      //    entry of this book (an export) stays on its own: it goes to that entry, so re-importing an export changes
+      //    nothing even while the book still holds duplicates (중복 정리 is for those).
+      // (a kanji word of a reading, in the book or the file, keeps kana-only homophones of that reading apart)
+      const live = sortLive();
+      const loose = valid.filter((v) => !v.sameId);
+      const grouping = IO.groupEntries(loose.map((v) => v.value), IO.kanjiReadings(live));
+      const memberSets = valid.filter((v) => v.sameId).map((v) => [v]).concat(grouping.groups.map((m) => m.map((k) => loose[k])));
+      memberSets.sort((a, b) => a[0].index - b[0].index);
+      const groups = memberSets.map((parts) => {
+        let value = contentFields(parts[0].value);
+        const dropped = { alts: [], meaning: [], note: false };
+        for (const p of parts.slice(1)) {
+          const m = IO.mergeContent(value, p.value, { mode: 'merge' });
+          value = m.value;
+          dropped.alts.push(...m.dropped.alts);
+          dropped.meaning.push(...m.dropped.meaning);
+          dropped.note = dropped.note || m.dropped.note;
+        }
+        res.counts.dup += parts.length - 1;
+        return { parts, value, dropped, dups: parts.slice(1).map((p) => ({ index: p.index, text: p.value.text, kanji: p.value.kanji })) };
+      });
+      // 2. against the book
+      const index = IO.makeIndex(live, IO.kanjiReadings(valid.map((v) => v.value)));
+      const liveFrozen = new Set();
+      for (const e of live) for (const j of Object.keys(e.tally || {})) liveFrozen.add(frozenKey(e.id, j));
+      const work = new Map();        // target id → { cur, next, content, own }
+      const adds = [];
+      const t = now();
+      let liveN = liveCount();
+      for (const g of groups) {
+        const same = g.parts.find((p) => p.sameId);
+        let tid = same ? same.item.id : null, hint = null;
+        if (!tid) {
+          const f = IO.findTarget(index, g.value);
+          if (f.target >= 0) tid = live[f.target].id;
+          else if (f.ambiguous.length) hint = { kind: 'ambiguous', with: f.ambiguous.map((i) => brief(live[i])) };
+          else if (f.maybe.length) hint = { kind: 'maybe', with: f.maybe.map((i) => brief(live[i])) };
+        }
+        const row = { action: 'add', index: g.parts[0].index, indexes: g.parts.map((p) => p.index), id: tid, content: null, before: null, changes: [], stats: false, dups: g.dups, hint, dropped: g.dropped };
+        if (!tid) {
+          const c = checkInput(g.value, null);
+          if (!c.value) { problem(row.index, g.parts[0].item._raw, IO.problemMessage(c, g.value), g.value.text); continue; }
+          if (liveN >= MAX_WORDS) { problem(row.index, g.parts[0].item._raw, ERR.limit, c.value.text, 'limit'); continue; }
+          liveN++;
+          const first = g.parts.find((p) => typeof p.item.id === 'string' && ID_RE.test(p.item.id) && !words.has(p.item.id) && !adds.some((a) => a.e.id === p.item.id));
+          const id = first ? first.item.id : null;
+          const created = g.parts.map((p) => num(p.item.createdAt)).find((x) => x > 0);
+          const e = Object.assign({ id: id || '' }, c.value, { createdAt: Math.min(created || t - adds.length, t), updatedAt: t, tally: {} });
+          for (const p of g.parts) if (absorbStats(e, p, id || '\u0000new', liveFrozen).changed) row.stats = true;
+          row.content = contentFields(e);
+          adds.push({ e, row });
+          res.rows.push(row);
+          res.counts.add++;
+          continue;
+        }
+        let w = work.get(tid);
+        if (!w) {
+          const cur = words.get(tid);
+          w = { cur, next: Object.assign({}, cur, { tally: Object.assign({}, cur.tally) }), content: contentFields(cur), own: false };
+          work.set(tid, w);
+        }
+        const before = w.content, beforeTally = stable(entryOut(w.next, true));
+        let content = before;
+        const dropped = { alts: g.dropped.alts.slice(), meaning: g.dropped.meaning.slice(), note: g.dropped.note };
+        for (const p of g.parts) {
+          let m = null;
+          if (mode === 'overwrite') m = IO.mergeContent(content, p.value, { mode: 'overwrite', typeGiven: p.typeGiven });
+          else if (p.sameId && p.item.id === tid) { if (p.updatedAt > w.cur.updatedAt) content = contentFields(p.value); }
+          else m = IO.mergeContent(content, p.value, { mode: 'merge' });
+          if (m) {
+            content = m.value;
+            dropped.alts.push(...m.dropped.alts);
+            dropped.meaning.push(...m.dropped.meaning);
+            dropped.note = dropped.note || m.dropped.note;
+          }
+          const s = absorbStats(w.next, p, tid, liveFrozen);
+          if (s.own) w.own = true;
+        }
+        const c = checkInput(content, null);
+        if (!c.value) { problem(row.index, g.parts[0].item._raw, IO.problemMessage(c, content), content.text); continue; }
+        content = contentFields(c.value);
+        w.content = content;
+        row.before = before;
+        row.content = content;
+        row.changes = IO.diffContent(before, content);
+        row.stats = stable(entryOut(w.next, true)) !== beforeTally;
+        row.dropped = dropped;
+        row.action = row.changes.length || row.stats ? 'update' : 'same';
+        res.rows.push(row);
+        res.counts[row.action]++;
+      }
+      // 3. commit
+      const undo = { kind: 'import', added: [], updated: [], stats: false };
+      for (const [tid, w] of work) {
+        const c = checkInput(w.content, null);
+        const next = withContent(w.next, c.value);
+        const contentChanged = stable(contentOf(next)) !== stable(contentOf(w.cur));
+        if (contentChanged) next.updatedAt = Math.max(t, w.cur.updatedAt + 1);
+        if (!contentChanged && stable(entryOut(next, true)) === stable(entryOut(w.cur, true))) continue;
+        if (!apply) continue;
+        if (w.own) notePendingSlot(w.cur);
+        words.set(tid, next);
+        touchWord(tid);
+        if (contentChanged) undo.updated.push({ id: tid, before: contentFields(w.cur) });
+        if (stable(next.tally) !== stable(w.cur.tally)) undo.stats = true;
+      }
+      for (const a of adds) {
+        if (!apply) continue;
+        const e = a.e;
+        if (!e.id) e.id = newWordId();
+        if (e.tally[main.device]) slotBase.set(e.id, cleanSlot(null));
+        words.set(e.id, e);
+        touchWord(e.id);
+        a.row.id = e.id;
+        undo.added.push(e.id);
+      }
+      res.added = res.counts.add;
+      res.updated = res.counts.update;
+      res.skipped = res.counts.same;
+      if (apply && (undo.added.length || undo.updated.length)) res.undo = undo;
+      return res;
+    }
+
+    // 중복 정리: groups of the same word already in the book (WordIO.groupEntries, oldest entry first = the one kept).
+    // → { groups: [{ ids, keep, sure: true, entries, result, changes }], maybe: [… sure: false] }
+    function findDuplicates() {
+      const IO = wordio();
+      if (!IO) return { groups: [], maybe: [] };
+      const live = sortLive();
+      const g = IO.groupEntries(live);
+      const describe = (members, sure) => {
+        const ms = members.slice().sort((x, y) => x - y);
+        let content = contentFields(live[ms[0]]);
+        for (const i of ms.slice(1)) content = IO.mergeContent(content, live[i], { mode: 'merge' }).value;
+        return { ids: ms.map((i) => live[i].id), keep: live[ms[0]].id, sure, entries: ms.map((i) => viewOf(live[i])), result: content, changes: IO.diffContent(contentFields(live[ms[0]]), content) };
+      };
+      return {
+        groups: g.groups.filter((m) => m.length > 1).map((m) => describe(m, true)),
+        maybe: g.maybe.map(([a, b]) => describe(g.groups[a].concat(g.groups[b]), false)),
+      };
+    }
+
+    // sets: [[id, …], …] — each set becomes one entry (overlapping sets join). The oldest is kept (its id, so its
+    // stats and the practice selection stay), the others' content merged in (WordIO.mergeContent), their stats added as
+    // frozen slots, then they are removed (tombstones, like 삭제).
+    function mergeDuplicates(sets) {
+      const IO = wordio();
+      const out = { merged: 0, removed: 0, undo: null };
+      if (!IO || !Array.isArray(sets)) return out;
+      const parent = new Map();
+      const find = (x) => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+      for (const s of sets) {
+        const ids = (Array.isArray(s) ? s : []).filter((id) => typeof id === 'string' && words.has(id) && !words.get(id).deleted);
+        for (const id of ids) if (!parent.has(id)) parent.set(id, id);
+        for (let k = 1; k < ids.length; k++) { const a = find(ids[0]), b = find(ids[k]); if (a !== b) parent.set(b, a); }
+      }
+      const byRoot = new Map();
+      for (const id of parent.keys()) { const r = find(id); if (!byRoot.has(r)) byRoot.set(r, []); byRoot.get(r).push(words.get(id)); }
+      const undo = { kind: 'dedup', added: [], updated: [], removed: [], stats: false };
+      const t = now();
+      for (const members of byRoot.values()) {
+        if (members.length < 2) continue;
+        members.sort((a, b) => (a.createdAt - b.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+        const keep = members[0], others = members.slice(1);
+        let content = contentFields(keep);
+        for (const o of others) content = IO.mergeContent(content, o, { mode: 'merge' }).value;
+        const c = checkInput(content, null);
+        if (!c.value) continue;
+        const next = withContent(Object.assign({}, keep, { tally: Object.assign({}, keep.tally) }), c.value);
+        for (const o of others) {
+          for (const k of Object.keys(o.tally || {})) {
+            const fk = frozenKey(o.id, k);
+            next.tally[fk] = joinSlot(next.tally[fk] || null, o.tally[k]);
+            undo.stats = true;
+          }
+        }
+        const contentChanged = stable(contentOf(next)) !== stable(contentOf(keep));
+        if (contentChanged) {
+          next.updatedAt = Math.max(t, keep.updatedAt + 1);
+          undo.updated.push({ id: keep.id, before: contentFields(keep) });
+        }
+        next.createdAt = Math.min(keep.createdAt, ...others.map((o) => o.createdAt || keep.createdAt));
+        words.set(keep.id, next);
+        touchWord(keep.id);
+        for (const o of others) {
+          undo.removed.push({ id: o.id, keep: keep.id, content: contentFields(o), createdAt: o.createdAt });
+          removeWord(o.id);
+          out.removed++;
+        }
+        out.merged++;
+      }
+      if (out.merged) out.undo = undo;
+      return out;
+    }
+
+    // Undo of applyImport / mergeDuplicates (their `undo`): added words removed, edited ones given their content back,
+    // merged-away ones added again (new ids; their stats stay with the entry they were merged into).
+    function undoChange(u) {
+      const out = { ok: false, restored: 0 };
+      if (!isObj(u)) return out;
+      for (const id of Array.isArray(u.added) ? u.added : []) if (typeof id === 'string' && removeWord(id)) out.restored++;
+      for (const x of Array.isArray(u.updated) ? u.updated : []) {
+        const e = isObj(x) ? words.get(x.id) : null;
+        if (!e || e.deleted) continue;
+        const c = checkInput(x.before, null);
+        if (!c.value) continue;
+        const next = withContent(e, c.value);
+        if (stable(contentOf(next)) === stable(contentOf(e))) continue;
+        next.updatedAt = Math.max(now(), e.updatedAt + 1);
+        words.set(x.id, next);
+        touchWord(x.id);
+        out.restored++;
+      }
+      for (const x of Array.isArray(u.removed) ? u.removed : []) {
+        if (!isObj(x) || liveCount() >= MAX_WORDS) continue;
+        const c = checkInput(x.content, null);
+        if (!c.value) continue;
+        const t = now();
+        const e = Object.assign({ id: newWordId() }, c.value, { createdAt: Math.min(num(x.createdAt) || t, t), updatedAt: t, tally: {} });
+        words.set(e.id, e);
+        touchWord(e.id);
+        out.restored++;
+      }
+      out.ok = true;
+      return out;
+    }
+
     /* -------------------------------------------------------------- state API */
     function init(opts) {
       teardown();
@@ -1999,6 +2318,11 @@
       };
     }
     const errResult = () => fail('internal', null, '저장하지 못했어요. 잠시 후 다시 해 주세요.');
+    const failedPlan = () => {
+      const message = '가져오지 못했어요. 잠시 후 다시 해 주세요.';
+      return { mode: 'merge', rows: [], problems: [{ index: -1, message, text: '' }], counts: { add: 0, update: 0, same: 0, dup: 0, problem: 1 },
+        added: 0, updated: 0, skipped: 0, errors: [{ index: -1, text: '', message }], undo: null };
+    };
 
     const api = {
       init: guard('init', init, () => ({ settings: cleanSettings(null), stats: own || emptyStats(), prefs: {}, words: [] })),
@@ -2020,6 +2344,11 @@
         exportJSON: guard('words.exportJSON', () => { ensureInit(); return exportWords(); }, '{"format":"kana-practice-words","v":1,"words":[]}'),
         importJSON: guard('words.importJSON', (text) => { ensureInit(); return importWords(text); }, () => ({ added: 0, updated: 0, skipped: 0, errors: [{ index: -1, message: '가져오지 못했어요.' }] })),
         recordResult: guard('words.recordResult', (id, r) => { ensureInit(); return recordResult(id, r); }, null),
+        planImport: guard('words.planImport', (items, opts) => { ensureInit(); return importPlan(items, opts, false); }, () => failedPlan()),
+        applyImport: guard('words.applyImport', (items, opts) => { ensureInit(); return importPlan(items, opts, true); }, () => failedPlan()),
+        duplicates: guard('words.duplicates', () => { ensureInit(); return findDuplicates(); }, () => ({ groups: [], maybe: [] })),
+        mergeDuplicates: guard('words.mergeDuplicates', (sets) => { ensureInit(); return mergeDuplicates(sets); }, () => ({ merged: 0, removed: 0, undo: null })),
+        undo: guard('words.undo', (u) => { ensureInit(); return undoChange(u); }, () => ({ ok: false, restored: 0 })),
       },
       PURGE_MS,
       LIMITS: Object.assign({ words: MAX_WORDS }, LIMITS),
