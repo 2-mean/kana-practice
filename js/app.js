@@ -369,7 +369,7 @@
    * state.prefs in memory, call persist() after a change, and read stats for display through viewStats().
    *   persistence.load()           → { settings, stats, prefs } as stored (raw; sanitized by the caller)
    *   persistence.save(snapshot)   ← { settings, stats, prefs }
-   *   persistence.stats(state)     → stats to SHOW / weigh with (records, 틀린 글자 위주, 무한 모드)
+   *   persistence.stats(state)     → stats to SHOW / weigh with (records; the '…위주' options of a test)
    *   persistence.resetStats(state)  clears the learner's records
    *   persistence.isLocal()        → false when nothing survives a reload (storage blocked → in-memory only)
    * With js/store.js loaded (the normal case) everything goes through KanaStore (SPEC-words F): load →
@@ -1044,7 +1044,12 @@
       const n = Q.charsFor(st, D).length;
       if (!n) summary.textContent = '행을 하나 이상 골라 주세요.';
       else if (st.count === 'endless') summary.textContent = `선택한 글자 ${n}자 → 무한 모드 (그만할 때까지)`;
-      else summary.textContent = `선택한 글자 ${n}자 → ${Q.questionCount(st, n)}문제`;
+      else {
+        const q = Q.questionCount(st, n);
+        // every char once (전체, or a count equal to the selection): the '…위주' options have nothing to weigh
+        const once = q === n && (st.focusConfusable || st.focusWrong || st.focusLess);
+        summary.textContent = `선택한 글자 ${n}자 → ${q}문제${q > n ? ' (같은 글자가 여러 번 나와요)' : once ? ' (모두 한 번씩 나와서 「…위주」는 적용되지 않아요)' : ''}`;
+      }
       summary.classList.toggle('is-empty', !n);
       startRead.disabled = !n;
       startWrite.disabled = !n;
@@ -1079,8 +1084,15 @@
       ], st.count, (v) => { st.count = v; changed(); }, 'seg-count'),
       h('fieldset', { class: 'seg-field' },
         h('legend', { class: 'field-label' }, '옵션'),
-        toggleRow('헷갈리는 글자 위주', '닮은 글자가 있는 글자를 더 자주 내요.', st.focusConfusable, (v) => { st.focusConfusable = v; persist(); }),
-        toggleRow('틀린 글자 위주', hasStats ? '기록에서 자주 틀린 글자를 더 자주 내요.' : '기록이 쌓이면 자주 틀린 글자를 더 자주 내요.', st.focusWrong, (v) => { st.focusWrong = v; persist(); })),
+        toggleRow('헷갈리는 글자 위주', '닮은 글자가 있는 글자를 더 자주 내요.', st.focusConfusable, (v) => { st.focusConfusable = v; persist(); renderSummary(); }),
+        toggleRow('틀린 글자 위주', hasStats ? '기록에서 자주 틀린 글자를 더 자주 내요.' : '기록이 쌓이면 자주 틀린 글자를 더 자주 내요.', st.focusWrong, (v) => { st.focusWrong = v; persist(); renderSummary(); }),
+        toggleRow('학습 덜 한 글자 위주', '덜 풀어 본 글자, 오래 안 푼 글자를 더 자주 내요.', !!st.focusLess, (v) => {
+          // kept only while on (absent = off), the shape Q.sanitizeSettings gives back
+          if (v) st.focusLess = true; else delete st.focusLess;
+          persist();
+          renderSummary();
+        }),
+        h('p', { class: 'seg-hint' }, '「…위주」는 그 글자를 더 자주 낼 뿐, 다른 글자도 계속 나와요. 함께 켜면 효과가 겹쳐요.')),
       h('details', { class: 'more' },
         h('summary', null, '세부 설정'),
         segmented('font', '읽기 글꼴', [
@@ -1120,7 +1132,7 @@
 
   /* ================================================================ test lifecycle
    * state.test = { mode, script, active, retry, label, questions: [{ ch, script, font, retry? }], index, answers, cur,
-   *                endless: null | { run, pool } }   — 무한 모드 appends one question at a time (Q.nextEndless). */
+   *                endless: null | { run, pool, mult } }   — 무한 모드 appends one question at a time (Q.nextEndless). */
 
   function makeQuestion(q) {
     const pref = state.settings.readFont;
@@ -1129,8 +1141,7 @@
 
   function nextEndlessQuestion(t) {
     const e = t.endless;
-    const statsOf = Q.endlessStatsOf(viewStats(), t.mode, state.settings, D, e.pool);
-    const pick = Q.nextEndless(e.run, e.pool, statsOf, Math.random, { pairOf: (c) => (D.kana[c] ? D.kana[c].pair : null) });
+    const pick = Q.nextEndless(e.run, e.pool, e.mult, Math.random, { pairOf: (c) => (D.kana[c] ? D.kana[c].pair : null) });
     return Object.assign(makeQuestion({ ch: pick.key, script: D.kana[pick.key].script }), { retry: pick.retry });
   }
 
@@ -1141,7 +1152,11 @@
     let endlessRun = null;
     if (endless) {
       const all = Q.charsFor(st, D);
-      if (all.length) endlessRun = { run: Q.endlessStart({ retryTri: mode === 'write' }), pool: all };
+      // the '…위주' multipliers come from the history before the run (SPEC-words A): taken once, kept with the run
+      if (all.length) {
+        const mult = Q.focusTable(all, Q.endlessStatsOf(viewStats(), mode, st, D, all));
+        endlessRun = { run: Q.endlessStart({ retryTri: mode === 'write' }), pool: all, mult };
+      }
     } else {
       pool = chars ? Q.poolFromChars(chars, D, Math.random) : Q.buildPool(st, D, viewStats(), Math.random, mode);
     }

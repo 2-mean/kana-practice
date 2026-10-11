@@ -39,6 +39,8 @@
   const RECENT_MAX = 8;
   const SESSIONS_MAX = 40;
 
+  /* focusLess (학습 덜 한 글자 위주) is off unless the key is present and true: it is left out of the defaults so a
+   * record saved before it existed reads back unchanged (and an old app version keeps reading ours). */
   function defaultSettings() {
     return {
       script: 'hira',
@@ -65,6 +67,7 @@
     if (COUNTS.includes(raw.count)) out.count = raw.count;
     out.focusConfusable = !!raw.focusConfusable;
     out.focusWrong = !!raw.focusWrong;
+    if (raw.focusLess === true) out.focusLess = true;
     if (FONTS.includes(raw.readFont)) out.readFont = raw.readFont;
     if (STRICTNESS.includes(raw.strictness)) out.strictness = raw.strictness;
     if (typeof raw.penOnly === 'boolean') out.penOnly = raw.penOnly;
@@ -126,64 +129,71 @@
     return out;
   }
 
+  // Questions in a test: 전체 / 무한 → every selected char (무한 keeps going); 10 / 20 / 30 → that many, even over a
+  // smaller selection (30 questions over 10 chars asks each about 3 times, balanced within the test — buildPool).
   function questionCount(settings, available) {
+    if (!(available > 0)) return 0;
     if (settings.count === 'all' || settings.count === 'endless') return available;
-    const n = Number(settings.count) || 10;
-    return Math.max(0, Math.min(n, available));
+    return Math.max(0, Math.floor(Number(settings.count) || 10));
   }
 
   function charStats(stats, ch) {
     return (stats && stats.chars && stats.chars[ch]) || null;
   }
 
+  // A counter of a stats record that may not have been through sanitizeStats (bad / missing values count as 0).
+  const cnt = (o, k) => (o && typeof o === 'object' ? nat(o[k]) : 0);
+
   // 0..1: how badly this char has gone so far (overall rate blended with the most recent answers).
   function wrongness(stats, ch, mode) {
     const s = charStats(stats, ch);
-    if (!s) return 0;
+    if (!s || typeof s !== 'object') return 0;
     let bad = 0, total = 0;
-    if (mode !== 'write' && s.read) { bad += s.read.ng || 0; total += (s.read.ok || 0) + (s.read.ng || 0); }
-    if (mode !== 'read' && s.write) {
-      bad += (s.write.x || 0) + 0.5 * (s.write.t || 0);
-      total += (s.write.o || 0) + (s.write.t || 0) + (s.write.x || 0);
+    if (mode !== 'write') { bad += cnt(s.read, 'ng'); total += cnt(s.read, 'ok') + cnt(s.read, 'ng'); }
+    if (mode !== 'read') {
+      bad += cnt(s.write, 'x') + 0.5 * cnt(s.write, 't');
+      total += cnt(s.write, 'o') + cnt(s.write, 't') + cnt(s.write, 'x');
     }
     if (!total) return 0;
     const overall = bad / (total + 1);
-    const recent = (s.recent || []).filter((r) => !mode || r.m === mode || !r.m);
+    const recent = (Array.isArray(s.recent) ? s.recent : []).filter((r) => r && typeof r === 'object' && (!mode || r.m === mode || !r.m));
     let rec = 0;
     if (recent.length) rec = recent.reduce((acc, r) => acc + (r.g === 'x' ? 1 : r.g === 't' ? 0.5 : 0), 0) / recent.length;
     return Math.min(1, 0.5 * overall + 0.5 * rec);
   }
 
-  /* Build the question list for a test.
-   *   settings: { script, rows, count, focusConfusable, focusWrong }
-   *   mode: 'read' | 'write' (what counts as practised / missed in this mode); now: the clock (default Date.now())
-   * Returns [{ ch, script }] — no repeats; mixed mode always contains both scripts when it can. The chars are drawn
-   * by finiteWeights (the "rigged random" across tests, SPEC-words A): never-practised and long-unpractised chars
-   * first, the chars of the last tests rarely. Always in a shuffled order (전체 is every char, shuffled). */
+  /* Build the question list for a test (pickFinite, SPEC-words A).
+   *   settings: { script, rows, count, focusConfusable, focusWrong, focusLess }
+   *   stats / mode ('read' | 'write') / now (default Date.now()): read only for the '…위주' options that are on —
+   *   with all of them off the test is a plain random draw whatever the history.
+   * Returns [{ ch, script }] in a random order: count ≤ the selection → that many distinct chars (mixed mode takes
+   * both scripts, half each); 전체 → every char once; count > the selection → every char at least once and
+   * count / selection times each (± 1) with every option off, in the balancing order (the other-script twin rarely
+   * right after its pair). */
   function buildPool(settings, data, stats, rng, mode, now) {
     const r = rng || Math.random;
     const chars = charsFor(settings, data);
     if (!chars.length) return [];
     const n = questionCount(settings, chars.length);
-    const weights = n < chars.length
-      ? finiteWeights(chars, endlessStatsOf(stats, mode, settings, data, chars), { focusWrong: !!settings.focusWrong, rng: r, now })
-      : {};
-    const w = (ch) => weights[ch];
+    const statsOf = endlessStatsOf(stats, mode, settings, data, chars, now);
     let picked;
-    if (settings.script === 'mix' && n < chars.length) {
-      const hira = chars.filter((c) => data.kana[c].script === 'hira');
-      const kata = chars.filter((c) => data.kana[c].script === 'kata');
-      let nh = Math.floor(n / 2), nk = n - nh;
-      if (n % 2 && r() < 0.5) { nh++; nk--; }
-      if (n >= 2) { nh = Math.max(1, nh); nk = Math.max(1, nk); }
-      if (nh > hira.length) { nk += nh - hira.length; nh = hira.length; }
-      if (nk > kata.length) { nh += nk - kata.length; nk = kata.length; }
-      picked = weightedSample(hira, nh, w, r).concat(weightedSample(kata, nk, w, r));
+    if (n > chars.length) {
+      picked = pickFinite(chars, n, statsOf, r, { pairOf: (c) => (data.kana[c] ? data.kana[c].pair : null) });
     } else {
-      picked = n < chars.length ? weightedSample(chars, n, w, r) : chars.slice();
+      if (settings.script === 'mix' && n < chars.length) {
+        const hira = chars.filter((c) => data.kana[c].script === 'hira');
+        const kata = chars.filter((c) => data.kana[c].script === 'kata');
+        let nh = Math.floor(n / 2), nk = n - nh;
+        if (n % 2 && r() < 0.5) { nh++; nk--; }
+        if (n >= 2) { nh = Math.max(1, nh); nk = Math.max(1, nk); }
+        if (nh > hira.length) { nk += nh - hira.length; nh = hira.length; }
+        if (nk > kata.length) { nh += nk - kata.length; nk = kata.length; }
+        picked = shuffle(pickFinite(hira, nh, statsOf, r).concat(pickFinite(kata, nk, statsOf, r)), r);
+      } else {
+        picked = pickFinite(chars, n, statsOf, r);
+      }
+      spreadPairs(picked, data);
     }
-    shuffle(picked, r);
-    spreadPairs(picked, data);
     return picked.map((ch) => ({ ch, script: data.kana[ch].script }));
   }
 
@@ -386,7 +396,7 @@
   }
 
   /* Reading answer. A 컨닝 answer only counts toward `cheat` (and `ng` when it was still wrong); a cheated
-   * correct answer is not a success, so it is also kept out of `recent` (틀린 글자 위주 / 무한 모드 weights). */
+   * correct answer is not a success, so it is also kept out of `recent` (the 틀린 글자 위주 weight). */
   function recordReading(stats, ch, res, now) {
     const c = ensureChar(stats, ch);
     const correct = !!res.correct;
@@ -497,57 +507,60 @@
   }
 
   /* ---------------------------------------------------------------- "rigged random" selection (SPEC-words A)
-   * Shared by the finite tests (10/20/30/전체: which items a test asks) and 무한 모드 (the next question), for kana
-   * and for 단어장 entries alike. Keys are any strings (kana, or word ids). statsOf(key) → { x, t, miss?, seen,
-   * lastAt?, mult? }: recent ✕ / △ count of the item in this mode, its decayed miss score (missScore; derived from
-   * x / t when absent), whether it was ever answered in this mode, when it was last answered (ms, any mode; 0 =
-   * unknown), and the focus multiplier (헷갈리는 / 틀린 … 위주, 1 = none). No rounds, no deck, no fixed rotation: every
-   * pick is a weighted random draw, but an item that has not come up for a while gets steadily likelier (a pity
-   * counter), so nothing hogs the practice and nothing is left out for long — yet nothing is ever forced.
+   * Shared by the finite tests (10/20/30/전체) and 무한 모드, for kana and 단어장 entries alike. Keys are any strings
+   * (kana, or word ids). Pure and deterministic given the injected rng; run state is plain JSON.
    *
-   * Common factors:
-   *   nudge  = 1 + 0.5 · min(1, miss) · 0.5^(idle / 7 days)   (≤ 1.5×) — past mistakes nudge, they never dominate.
-   *            miss = missScore of the item's recent answers in this mode (✕ 1, △ ½, each halved by every later
-   *            answer); idle = time from the item's lastAt to the newest lastAt in the pool, so a mistake fades as
-   *            the learner practises on (a break between sessions changes nothing by itself).
-   *   mult   = focus, clamped to 1..4 (bad values / below 1 → 1, so nothing starves): 틀린 … 위주 1 + 2 · wrong rate
-   *            (≤ 3×); 헷갈리는 글자 위주 ×3 with a look-alike in the pool, else ×1.75. A focused item's pity clock runs
-   *            faster, so it is due sooner, yet right after it is asked it starts from 1 again like everything else
-   *            (no clustering): ≈ mult× as often, up to ≈ 3×.
+   * Each test is independent: what a test asks depends on that test alone (and the rng) — how earlier tests went
+   * plays no part (no head start for unpractised items, no nudge for past mistakes) unless the learner turns on a
+   * '…위주' option. Those options only change weights: they never narrow the range, never force an item in, never
+   * order the questions. statsOf(key) → { mult } (or a plain { key: mult } table, focusTable) is the product of the
+   * multipliers of the options that are on — 1 for every item when all are off — made a multiplier for the pool by
+   * focusScale (as it is up to ×6; past that the pool's spread is scaled to ×6 in log space, order kept), 1..6 (bad
+   * values → 1), so a favoured item comes up a few times as often while every other item keeps coming up.
    *
-   * Finite tests (finiteWeights / pickFinite) — weighted sampling without replacement (Efraimidis–Spirakis) with
-   *   weight = nudge · e^(8 · min(poolSize, age · mult) / poolSize)
-   *   age = how many pool items were answered (any mode) after this one: its rank by lastAt, newest 0 — the number
-   *   of questions since it came up, as far as the stats can tell (lastAt unknown: poolSize, the stalest). Each
-   *   eighth of the pool practised since makes an item ≈ 2.7× likelier; the stalest is ≈ 3000× likelier than the
-   *   one just asked, so back-to-back tests walk through the whole set instead of re-drawing the same items, while
-   *   which stale items a test gets stays random.
-   *   An item never answered in this mode weighs × 100 the stalest practised one (× 10 with 틀린 … 위주, so missed
-   *   items still get a share), times its mult: new / untouched items come first. A lastAt more than a day in the
-   *   future (a fast clock elsewhere) is unknown: that item gets a random age each test (≈ a plain shuffle's share).
-   *   Simulated (172 words, 20 a test, 30 % ✕): every word asked within 9 tests (plain shuffles: ≈ 56 never asked),
-   *   ≈ 0.01 words a test repeated from the previous one (2.3), over 40 tests the longest wait ≈ 15 tests (ideal 8.6).
-   *   The picked items always come in a shuffled order; 전체 is the whole pool, shuffled (no weights).
+   * Within one run (무한 모드, or a finite test with more questions than items) — balancing: an item's weight rises
+   * while it waits and drops when it is asked, so over a long run every item comes up about equally often (in
+   * proportion to its mult), in a random order — no deck, no fixed rotation.
+   *   weight = share · e^(α · deficit) · e^(2 · max(0, wait − 1))
+   *     share   = mult / (Σ mult over the pool) — the item's fair share of the questions (1 / poolSize when all are 1),
+   *               at most 1 / (1.25 · (window + 1)) (shareCap; the excess goes to the others by their mult): the
+   *               window lets an item come every window + 1 questions at most, and a share near that made a
+   *               favoured item in a small pool a clock (×2 among 10: back exactly 6 questions later 97 % of the time)
+   *     deficit = questions so far · share − times the item was asked in this run (spaced retries included): every
+   *               question that goes by raises it by share, every ask lowers it by 1 — an item asked more than its
+   *               share is held back, one asked less is pulled in. An item that joins the pool mid-run (or comes
+   *               back after it was left out) counts both from the question it joined at (run.since), so it comes
+   *               up soon but owes nothing for the questions before — no catch-up burst
+   *     α       = 0.5 + 0.75 · ln(poolSize): one ask over the share costs ×9 at 10 items, ×29 at 46, ×78 at 172
+   *     wait    = (questions since the item was last asked in this run) · share, in fair periods (an item not asked
+   *               yet counts from just before the run began); once it has waited a full period it gains a further
+   *               ×7.4 per period, so nothing is left out for long
+   *   drawn among the pool minus the last min(5, ⌊poolSize / 2⌋) asked items (at least half of a small pool stays
+   *   drawable), × 0.2 for the other-script twin of the previous item (か → カ). Weights are kept as logarithms (no
+   *   overflow however long the run).
+   *   Simulated, all ○, 6 pools of questions (pools 10 / 46 / 142 / 172; targets in brackets): per-item count CV
+   *   0.03–0.05 [≤ 0.12], fewest asks 5 of 6 [≥ 0.75 · mean]; every item asked after a median of 1.0–1.09 pools
+   *   [≤ 1.35]; longest gap of a run, p99 1.9–2.3 pools [≤ 2.5]; some item back before every item came up in 100 %
+   *   of runs for P ≥ 46 [≥ 50 %]; first-appearance orders of two runs uncorrelated (Spearman ≈ 0.01); where an item
+   *   comes in one pool-length round vs the next ρ ≈ 0.1 (P ≥ 46; 0.36 at 10, where the window alone forces some).
+   *   With 25–40 % ✕ (retries 11–14 % of the questions) the per-item count CV stays 0.04–0.07 [≤ 0.2]. ×m comes up
+   *   ≈ m× as often as ×1 (×2 → 1.99, ×3 → 3.02, ×6 → 5.84 among 46), every other item still in every run; in a
+   *   small pool the cap holds a favoured item to ≈ 1.4× (10 items) with its gaps still varied (CV ≈ 0.2).
    *
-   * 무한 모드 — a run keeps asking from `pool` until the learner stops. Pure and deterministic given rng:
+   * Finite tests — pickFinite(pool, n, statsOf, rng, opts): n ≤ poolSize → n distinct items, a uniform random sample
+   *   when every mult is 1 (else a weighted sample by mult, Efraimidis–Spirakis); n = poolSize (전체) → every item
+   *   once; n > poolSize → every item at least once, the other n − poolSize by the fair shares (finiteTargets: with
+   *   every mult 1, n / poolSize each rounded up or down), ordered by the balancing draw above over the items with
+   *   asks left, an ask that cannot wait first (dueFirst: the rest still fit outside the window); no retries.
+   *   Always in a random order.
+   *
+   * 무한 모드 — a run keeps asking from `pool` until the learner stops:
    *   run  = endlessStart({ retryTri })                   → { asked, retries, retryStreak, retryTri, retried, retryCount }
+   *          (+ since: { key: question it joined the pool at }, added by the first nextEndless)
    *   pick = nextEndless(run, pool, statsOf, rng, opts)   → { key, retry } (key is appended to run.asked)
    *   endlessRecord(run, key, mark, rng, poolSize)        after the answer is graded ('o' | 't' | 'x')
-   * The run state is plain JSON. opts.pairOf(key) → key that should not come right after it (か then カ); opts.now:
-   * the clock for the lastAt check (default Date.now(); a lastAt over a day ahead counts as unknown).
-   *  - fresh pick: draw among the pool minus the last min(5, ⌊poolSize / 2⌋) asked items (at least half of a small
-   *    pool stays drawable, so a pool of 3–6 is not a fixed rotation) with
-   *      weight = nudge · pity(age · mult^1.5)    (× 0.2 for the twin of the previous item; ×3 → ≈ 2.5× as often)
-   *      pity   = min(100, (1 + age / s)^2.5), s = max(1, poolSize / 2)
-   *               (≈ 5.7 at half a pool, 15.6 at one pool, 56 at two pools, capped from ≈ 2.65 pools on)
-   *      age    = other questions asked since the item was last asked in this run. An item not asked yet in this
-   *               run has age = head + questions so far, head = poolSize · (0.75 + 0.5·stale), where stale = 1 if it
-   *               was never answered in this mode or its lastAt is unknown (½ when in the future), else
-   *               ln(1 + idle hours) / ln(1 + 14 · 24) capped at 1, idle
-   *               being the time from its lastAt to the newest lastAt in the pool (so unseen / long-unseen items
-   *               lead, and everything not yet asked keeps gaining weight as the run goes on);
-   *    tuned by simulation (pool 46, all ○: every item seen by ≈ 60 questions, p99 gap ≈ 2 pools, per-item count
-   *    spread about half of the old flat weights);
+   * opts.pairOf(key) → key that should not come right after it (か then カ).
+   *  - fresh pick: the balancing draw above;
    *  - spaced retry: an item answered ✕ (or △ when retryTri — kana writing; 단어장 never retries △) is re-asked
    *    once, after gap = max(5, min(20, round(poolSize / 3))) ± 30 % other questions, but at least
    *    min(5, poolSize − 1) (never inside the no-repeat window; exactly poolSize − 1 in pools of 2–6, where a fresh
@@ -555,130 +568,142 @@
    *    retry, or a later miss of an item already retried, schedules nothing. A due retry is asked before fresh
    *    picks, oldest first, never more than two in a row, and only while retries stay within 15 % of the questions
    *    asked (counting the one about to be asked); a retry still waiting 3 questions after it fell due is dropped
-   *    (so the excess goes oldest first). A retry, like any question, resets the item's age. */
+   *    (so the excess goes oldest first). A retry counts as an appearance like any question (it raises the item's
+   *    count and resets its wait), so the balancing evens it out afterwards. */
   const ENDLESS_WINDOW = 5;
   const RETRY_GAP_MIN = 5, RETRY_GAP_MAX = 20, RETRY_GAP_DIV = 3, RETRY_JITTER = 0.3;
   const RETRY_RUN = 2, RETRY_SHARE = 0.15, RETRY_GRACE = 3;
-  const PITY_SCALE = 1 / 2, PITY_POW = 2.5, PITY_CAP = 100;
-  const HEAD_MIN = 0.75, HEAD_MAX = 1.25;     // head-start age of an item not asked yet in this run, × poolSize
-  const STALE_HOURS = 14 * 24;                // idle time (log scale) at which an item counts as fully stale
-  const HOUR = 3600000;
-  const FOCUS_MAX = 4, FOCUS_POW = 1.5;       // mult (헷갈리는 / 틀린 … 위주): 무한 pity clock × (mult in 1..4)^1.5
-  const MISS_NUDGE = 0.5, MISS_HALF_HOURS = 7 * 24;
-  const NEW_BOOST = 100, NEW_BOOST_FOCUS = 10; // finite tests: never answered in this mode (× the stalest practised)
-  const PICK_STEEP = 8;                       // finite tests: weight e^(8 · age / poolSize)
+  const BAL_BASE = 0.5, BAL_PER_LOG = 0.75;  // α = 0.5 + 0.75 · ln(poolSize)
+  const OVERDUE_GAIN = 2;                    // × e^(2 · max(0, wait − 1)), wait in fair periods
+  const TWIN_DAMP = 0.2;                     // the other-script twin right after its pair
+  const FOCUS_MAX = 6;                       // the '…위주' multipliers of a pool span at most ×6 (focusScale)
+  const DUE_ROOM = 1;                        // dueFirst: a finite test's asks fit before the end, outside the window
+  const SHARE_ROOM = 1.25;                   // an item's share ≤ 1 / (1.25 · (window + 1)) (shareCap)
 
-  // Decayed mistake score of an item's recent answers (chronological 'o' | 't' | 'x'): ✕ 1, △ ½, halved per later answer.
-  function missScore(marks) {
-    let m = 0;
-    for (const g of marks || []) m = m / 2 + (g === 'x' ? 1 : g === 't' ? 0.5 : 0);
-    return m;
+  // α of a pool: how much one ask over (or under) the fair share weighs.
+  function balanceAlpha(size) {
+    return BAL_BASE + BAL_PER_LOG * Math.log(Math.max(1, size || 1));
   }
 
-  // The ≤ 1.5× mistake nudge, fading with the time from the item's last answer to `ref` (the newest in the pool).
-  function missNudge(s, ref) {
-    const raw = Number.isFinite(s.miss) ? s.miss : upTo3(s.x) + 0.5 * upTo3(s.t);
-    const miss = Math.min(1, Math.max(0, raw));
-    if (!miss) return 1;
-    const last = Number(s.lastAt) || 0;
-    const idle = last > 0 && ref > last ? (ref - last) / HOUR : 0;
-    return 1 + MISS_NUDGE * miss * Math.pow(0.5, idle / MISS_HALF_HOURS);
+  // A '…위주' multiplier clamped to 1..6 (bad values and values below 1 count as ×1: nothing is ever held back).
+  function focusMult(v) {
+    const m = Number(v);
+    return m > 1 ? Math.min(FOCUS_MAX, m) : 1;
   }
 
-  // Focus multiplier clamped to 1..4 (bad values and values below 1 count as ×1: a slower clock could starve an item).
-  const focusMult = (s) => (s.mult > 1 ? Math.min(FOCUS_MAX, s.mult) : 1);
-  // 무한 모드's pity-clock speed of a focused item: (mult clamped to 1..4)^1.5.
-  const focusSpeed = (s) => Math.pow(focusMult(s), FOCUS_POW);
-
-  /* The items' stats, with lastAt checked against the clock: a time more than a day ahead of `now` (another device's
-   * clock running fast, a hand-edited import) says nothing about when the item was practised — it would stay "the
-   * newest" until that date and starve the item — so it counts as unknown (lastAt 0, future: true) and is left out
-   * of `ref`, the newest answer in the pool. */
-  const SKEW_MS = 24 * 3600000;
-  function statsMap(items, statsOf, now) {
-    const limit = (Number.isFinite(now) ? now : Date.now()) + SKEW_MS;
-    const stats = new Map();
-    let ref = 0;
-    for (const k of items) {
-      let s = (statsOf && statsOf(k)) || {};
-      const at = Number(s.lastAt);
-      if (at > limit) s = Object.assign({}, s, { lastAt: 0, future: true });
-      else if (at > ref) ref = at;
-      stats.set(k, s);
+  /* The products of the '…위주' options that are on, made multipliers for one pool (products: the pool's, any order).
+   * While the largest is at most ×6 a product is its multiplier as it is. Past that, every product is divided by the
+   * pool's smallest and, when the spread is still over ×6, raised to the same power γ = ln 6 / ln(largest / smallest):
+   * the spread becomes exactly ×6, the order is kept and every option keeps its say. (A plain clamp at 6 flattened
+   * most of a pool with all three kana options on — turning 틀린 글자 위주 on next to the other two then changed the
+   * missed chars' odds by ×1.01–1.13.) → product → mult (1..6; bad values ×1) */
+  function focusScale(products) {
+    let lo = Infinity, hi = 0;
+    for (const v of products || []) {
+      const p = Number(v);
+      if (p >= 1 && p < Infinity) { if (p < lo) lo = p; if (p > hi) hi = p; }
     }
-    return { stats, ref };
+    if (!(hi > FOCUS_MAX)) return focusMult;
+    const g = hi / lo > FOCUS_MAX ? Math.log(FOCUS_MAX) / Math.log(hi / lo) : 1;
+    return (v) => { const p = Number(v); return p >= 1 ? focusMult(Math.pow(p / lo, g)) : 1; };
   }
 
-  /* { key: weight } of a finite test's draw (see above). opts.focusWrong: 틀린 … 위주 is on (untouched items get
-   * × 10 instead of × 100, so the focused mistakes can compete with them). opts.now: the clock (default Date.now());
-   * opts.rng: the draw's rng — an item whose lastAt is in the future (statsMap) gets a random age each test, i.e. it
-   * comes up about as often as with a plain shuffle (without opts.rng: half the pool). */
-  function finiteWeights(pool, statsOf, opts) {
-    const o = opts || {};
-    const items = uniqueKeys(pool);
-    const size = items.length;
-    const { stats, ref } = statsMap(items, statsOf, o.now);
-    const lastOf = (k) => { const v = Number(stats.get(k).lastAt); return v > 0 ? v : 0; };
-    const sorted = items.map(lastOf).sort((a, b) => b - a);
-    // rank: how many pool items were answered after this one (binary search in the newest-first list)
-    const newerThan = (t) => { let lo = 0, hi = sorted.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] > t) lo = mid + 1; else hi = mid; } return lo; };
-    const boost = o.focusWrong ? NEW_BOOST_FOCUS : NEW_BOOST;
+  // statsOf → key → mult (1..6). statsOf: a function (key → { mult } or a number), a plain { key: mult } table
+  // (focusTable; missing keys are ×1), or null (every item ×1).
+  function multGetter(statsOf) {
+    if (typeof statsOf === 'function') {
+      return (k) => { const s = statsOf(k); return focusMult(s && typeof s === 'object' ? s.mult : s); };
+    }
+    if (statsOf && typeof statsOf === 'object') {
+      return (k) => focusMult(Object.prototype.hasOwnProperty.call(statsOf, k) ? statsOf[k] : 1);
+    }
+    return () => 1;
+  }
+
+  /* The multipliers of a pool as a plain JSON table { key: mult } (1..6) — taken once at the start of a 무한 run so
+   * the run weighs its items by the history from before it (its own answers are the balancing's and the retries'
+   * business), and kept with the run state. */
+  function focusTable(pool, statsOf) {
+    const multOf = multGetter(statsOf);
     const out = {};
-    for (const k of items) {
-      const s = stats.get(k);
-      // age: its rank by lastAt; unknown (practised before lastAt was kept, or an import without it) = the stalest
-      const age = s.future ? size * (o.rng ? o.rng() : 0.5) : lastOf(k) > 0 ? newerThan(lastOf(k)) : size;
-      // a focused item's clock runs mult× faster (due sooner), but it never outweighs the stalest practised item
-      out[k] = s.seen
-        ? missNudge(s, ref) * finitePity(Math.min(size, age * focusMult(s)), size)
-        : boost * focusMult(s) * missNudge(s, ref) * finitePity(size, size);
-    }
+    for (const k of uniqueKeys(pool)) out[k] = multOf(k);
     return out;
   }
 
-  // Finite tests: weight of an item `age` pool items after it was last practised (age ≤ poolSize).
-  function finitePity(age, size) {
-    return Math.exp(PICK_STEEP * Math.max(0, age) / Math.max(1, size));
+  function uniqueKeys(pool) {
+    const items = [];
+    const seen = new Set();
+    for (const k of pool || []) if (k != null && !seen.has(k)) { seen.add(k); items.push(k); }
+    return items;
   }
 
-  /* A finite test's keys: n of the pool, no repeats, by finiteWeights, in a shuffled order — 전체 too: its sampling
-   * order (stalest first) would replay the previous test's order almost exactly (a rotation). opts: finiteWeights'. */
+  /* A finite test's keys (see above): n of the pool in a random order. n ≤ poolSize: distinct items — a uniform
+   * random sample with every mult 1, else weighted by mult; n = poolSize or n missing / not finite (전체): every
+   * item once; n > poolSize: every item at least once, the rest by the fair shares, in the balancing order
+   * (opts.pairOf as in nextEndless). */
   function pickFinite(pool, n, statsOf, rng, opts) {
     const r = rng || Math.random;
     const items = uniqueKeys(pool);
-    const k = Math.max(0, Math.min(items.length, n == null ? items.length : n));
-    if (k >= items.length) return shuffle(items, r);
-    const w = finiteWeights(items, statsOf, Object.assign({}, opts, { rng: r }));
-    return shuffle(weightedSample(items, k, (key) => w[key], r), r);
+    const size = items.length;
+    const num = Number(n);
+    const want = n == null || !Number.isFinite(num) ? size : Math.max(0, Math.floor(num));
+    if (!size || !want) return [];
+    if (want === size) return shuffle(items, r);
+    const multOf = multGetter(statsOf);
+    if (want > size) {
+      // every item at least once, the rest by the fair shares — then the order by the balancing draw over the items
+      // with asks left (the share of each is its own count over n)
+      const left = finiteTargets(items, want, fairShares(items, multOf), r);
+      const shares = new Map(items.map((k) => [k, left.get(k) / want]));
+      const run = endlessStart();
+      for (let i = 0; i < want; i++) {
+        const k = drawFresh(run, items, shares, r, opts || {}, dueFirst(items, left, i, want, windowSize(size)));
+        left.set(k, left.get(k) - 1);
+        run.asked.push(k);
+      }
+      return run.asked;
+    }
+    if (items.every((k) => multOf(k) === 1)) return shuffle(items, r).slice(0, want);
+    return shuffle(weightedSample(items, want, multOf, r), r);
+  }
+
+  /* How often each item comes up in a finite test of n > poolSize questions: once each, and the n − poolSize others
+   * shared out by the fair shares — each item ⌊e⌋ or ⌈e⌉ of its expected e = (n − poolSize) · share, by systematic
+   * sampling over a shuffled order (the total is exactly n). Every mult 1: n / poolSize each, rounded up or down at
+   * random. (Drawing every question afresh missed an item in 56 % of 20-question tests over 19 words — and asked
+   * another three times; with a ×1 item among ×6 ones, 30 over 10 left it out a third of the time.) → Map key → count */
+  function finiteTargets(items, n, shares, r) {
+    const extra = n - items.length;
+    let u = r();
+    if (!(u > 0 && u < 1)) u = 0.5;
+    const below = (x) => Math.min(extra, Math.max(0, Math.ceil(x - u - 1e-9)));   // points u, u + 1, … under x
+    const order = shuffle(items.slice(), r);
+    const out = new Map();
+    let cum = 0;
+    order.forEach((k, i) => {
+      const next = i === order.length - 1 ? extra : cum + extra * shares.get(k);
+      out.set(k, 1 + below(next) - below(cum));
+      cum = next;
+    });
+    return out;
+  }
+
+  /* The items a finite test may draw at question i (0-based) of n: those with asks left — or, when the test runs
+   * short of room, only the ones whose next ask cannot wait. An item with r asks left must have its next one by
+   * n − 1 − (r − 1) · (window + 1) to fit the rest outside the no-repeat window; when, for the j earliest of those
+   * deadlines, fewer than j + DUE_ROOM questions remain before the j-th, the draw is among those items (earliest
+   * deadlines first, the balancing weights still deciding between them). */
+  function dueFirst(items, left, i, n, win) {
+    const open = items.filter((k) => left.get(k) > 0);
+    const by = open.map((k) => ({ k, d: n - 1 - (left.get(k) - 1) * (win + 1) })).sort((a, b) => a.d - b.d);
+    for (let j = 0; j < by.length; j++) {
+      if (by[j].d - i < j + DUE_ROOM) return by.slice(0, j + 1).map((x) => x.k);
+    }
+    return open;
   }
 
   function endlessStart(opts) {
     return { asked: [], retries: [], retryStreak: 0, retryTri: !!(opts && opts.retryTri), retried: [], retryCount: 0 };
-  }
-
-  // Weight factor for an item `age` questions after it was last asked (grows smoothly, capped).
-  function endlessPity(age, poolSize) {
-    const s = Math.max(1, (poolSize || 1) * PITY_SCALE);
-    return Math.min(PITY_CAP, Math.pow(1 + Math.max(0, age) / s, PITY_POW));
-  }
-
-  // 0..1: how long ago the item was answered, relative to `ref` (the newest answer in the pool); 1 = never in this mode.
-  // (lastAt unknown — practised before it was kept: as stale as can be; a future stamp, statsMap: half way)
-  function endlessStale(s, ref) {
-    if (!s.seen) return 1;
-    if (s.future) return 0.5;
-    const last = Number(s.lastAt) || 0;
-    if (!(last > 0)) return 1;
-    if (!(ref > last)) return 0;
-    return Math.min(1, Math.log(1 + (ref - last) / HOUR) / Math.log(1 + STALE_HOURS));
-  }
-
-  const upTo3 = (v) => Math.min(3, Math.max(0, Number(v) || 0));
-
-  function uniqueKeys(pool) {
-    const items = [];
-    for (const k of pool || []) if (k != null && !items.includes(k)) items.push(k);
-    return items;
   }
 
   /* The last min(5, ⌊size / 2⌋) asked keys: neither a fresh pick nor a retry may repeat one of them. At least half
@@ -690,42 +715,102 @@
     return m > 0 ? run.asked.slice(Math.max(0, run.asked.length - m)) : [];
   }
 
-  // Candidates and weights of the next fresh pick (the rules above).
-  function freshWeights(run, items, statsOf, o) {
+  // run.since: key → the question (run.asked.length) at which the item joined the pool, for a pool that changes
+  // mid-run (nextEndless keeps it). Without it (a run from endlessStart before its first pick, pickFinite) every
+  // item counts from the start; an item not in it yet joins now.
+  const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  function joinedAt(run, k, n) {
+    const s = run.since;
+    if (!s || typeof s !== 'object') return 0;
+    return hasOwn(s, k) && s[k] >= 0 && s[k] <= n ? s[k] : n;
+  }
+
+  /* The largest share of the questions one item may have: 1 / (1.25 · (window + 1)), never below 1 / size. The
+   * no-repeat window lets an item come at most every (window + 1) questions; a share near that made a favoured
+   * item a clock — in a 10-item pool a ×2 item came back exactly 6 questions later 97 % of the time (its debt grew
+   * without end), three favoured items took turns like a rotation. With the room left, its gaps still vary. */
+  const shareCap = (size) => Math.max(1 / size, 1 / (SHARE_ROOM * (windowSize(size) + 1)));
+
+  /* Fair shares of the pool from the multipliers: mult / Σ mult, an item over the cap held at the cap and the rest
+   * shared out over the others in proportion to theirs (repeated until none is over). → Map key → share (Σ = 1) */
+  function fairShares(items, multOf) {
+    const cap = shareCap(items.length);
+    const mult = new Map();
+    let restM = 0;
+    for (const k of items) { const m = multOf(k); mult.set(k, m); restM += m; }
+    const out = new Map();
+    let rest = 1, more = true;
+    while (more) {
+      more = false;
+      for (const k of items) {
+        if (out.has(k) || !(mult.get(k) * rest > cap * restM)) continue;
+        out.set(k, cap); rest -= cap; restM -= mult.get(k); more = true;
+      }
+    }
+    for (const k of items) if (!out.has(k)) out.set(k, restM > 0 ? Math.max(0, rest) * mult.get(k) / restM : 0);
+    return out;
+  }
+
+  /* Candidates and log-weights of the next fresh pick (the balancing rules above). shares: Map key → fair share
+   * (fairShares); allowed: the keys that may be drawn (a finite test: those with asks left; default all). */
+  function freshWeights(run, items, shares, o, allowed) {
     const n = run.asked.length;
     const size = items.length;
-    const recent = endlessWindow(run, size);
-    let cands = items.filter((k) => !recent.includes(k));
-    if (!cands.length) cands = items;
+    const recent = new Set(endlessWindow(run, size));
+    const pool = allowed || items;
+    let cands = pool.filter((k) => !recent.has(k));
+    if (!cands.length) cands = pool;
+    const from = new Map(items.map((k) => [k, joinedAt(run, k, n)]));
+    // asks since the item joined (an item added mid-run owes nothing for the questions before it: no catch-up burst)
+    const count = new Map(), last = new Map();
+    run.asked.forEach((k, i) => { if (i >= (from.get(k) || 0)) count.set(k, (count.get(k) || 0) + 1); last.set(k, i); });
+    const alpha = balanceAlpha(size);
     const twin = n > 0 && o.pairOf ? o.pairOf(run.asked[n - 1]) : null;
-    const lastIdx = new Map();
-    run.asked.forEach((k, i) => lastIdx.set(k, i));
-    const { stats, ref } = statsMap(items, statsOf, o.now);
-    const weights = cands.map((k) => {
-      const s = stats.get(k);
-      const at = lastIdx.has(k) ? lastIdx.get(k) : -1;
-      const age = at >= 0 ? n - 1 - at : n + size * (HEAD_MIN + (HEAD_MAX - HEAD_MIN) * endlessStale(s, ref));
-      // a focused item's pity clock runs faster (it is due sooner), but it starts from 1 again once asked
-      let w = missNudge(s, ref) * endlessPity(age * focusSpeed(s), size);
-      if (twin != null && k === twin && cands.length > 1) w *= 0.2;
-      return w;
+    const logw = cands.map((k) => {
+      const share = shares.get(k);
+      const deficit = (n - from.get(k)) * share - (count.get(k) || 0);
+      const wait = (n - 1 - (last.has(k) ? last.get(k) : -1)) * share;
+      let v = Math.log(share) + alpha * deficit + OVERDUE_GAIN * Math.max(0, wait - 1);
+      if (twin != null && k === twin && cands.length > 1) v += Math.log(TWIN_DAMP);
+      return v;
     });
-    return { cands, weights };
+    return { cands, logw };
+  }
+
+  // Relative weights from log-weights (the largest is 1).
+  function fromLog(logw) {
+    let mx = -Infinity;
+    for (const v of logw) if (v > mx) mx = v;
+    return logw.map((v) => Math.exp(v - mx));
+  }
+
+  // One fresh balancing draw (no retries): the key.
+  function drawFresh(run, items, shares, r, o, allowed) {
+    const { cands, logw } = freshWeights(run, items, shares, o, allowed);
+    const w = fromLog(logw);
+    let u = r() * w.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < cands.length; i++) {
+      u -= w[i];
+      if (u < 0) return cands[i];
+    }
+    return cands[cands.length - 1];
   }
 
   // { key: probability } of the next fresh pick (due retries aside) — for tests and tuning.
   function endlessOdds(run, pool, statsOf, opts) {
     const items = uniqueKeys(pool);
     if (!items.length) return {};
-    const { cands, weights } = freshWeights(run, items, statsOf, opts || {});
-    const total = weights.reduce((a, b) => a + b, 0);
+    const { cands, logw } = freshWeights(run, items, fairShares(items, multGetter(statsOf)), opts || {});
+    const w = fromLog(logw);
+    const total = w.reduce((a, b) => a + b, 0);
     const out = {};
-    cands.forEach((k, i) => { out[k] = weights[i] / total; });
+    cands.forEach((k, i) => { out[k] = w[i] / total; });
     return out;
   }
 
   // State saved by an older version (before the retry limits) gets the new fields.
   function runState(run) {
+    if (!Array.isArray(run.asked)) run.asked = [];
     if (!Array.isArray(run.retries)) run.retries = [];
     if (!Array.isArray(run.retried)) run.retried = [];
     if (!(run.retryCount >= 0)) run.retryCount = 0;
@@ -739,6 +824,13 @@
     if (!items.length) return null;
     runState(run);
     const n = run.asked.length;
+    // who is in the pool since when: a new (or returning) item joins at n, one left out is forgotten (a run state
+    // without it — before the first pick, or saved by an older version — counts the current pool from the start)
+    const fresh = !run.since || typeof run.since !== 'object' || Array.isArray(run.since);
+    if (fresh) run.since = {};
+    const inPool = new Set(items.map(String));
+    for (const k of Object.keys(run.since)) if (!inPool.has(k)) delete run.since[k];
+    for (const k of items) if (!hasOwn(run.since, k)) run.since[k] = fresh ? 0 : n;
     // a retry held back more than RETRY_GRACE questions past its due (budget / two in a row) is dropped
     run.retries = run.retries.filter((x) => n - x.due <= RETRY_GRACE);
     let key = null, retry = false;
@@ -750,16 +842,7 @@
         .sort((a, b) => a.due - b.due);
       if (due.length) { key = due[0].key; retry = true; }
     }
-    if (key == null) {
-      const { cands, weights } = freshWeights(run, items, statsOf, opts || {});
-      const total = weights.reduce((a, b) => a + b, 0);
-      let u = r() * total;
-      key = cands[cands.length - 1];
-      for (let i = 0; i < cands.length; i++) {
-        u -= weights[i];
-        if (u < 0) { key = cands[i]; break; }
-      }
-    }
+    if (key == null) key = drawFresh(run, items, fairShares(items, multGetter(statsOf)), r, opts || {});
     run.asked.push(key);
     run.retries = run.retries.filter((x) => x.key !== key);
     run.retryStreak = retry ? run.retryStreak + 1 : 0;
@@ -790,35 +873,81 @@
     return run;
   }
 
-  /* statsOf for kana (finite tests and endless runs): recent ✕ / △ of the char in this mode (stats.chars[ch].recent)
-   * and their missScore, whether it was ever answered in this mode, when it was last answered in any mode
-   * (stats.chars[ch].last), and the focus multiplier: 헷갈리는 글자 위주 (×3 / ×1.75) times 틀린 글자 위주
-   * (1 + 2 · wrongness). */
-  function endlessStatsOf(stats, mode, settings, data, pool) {
-    const available = new Set(pool || []);
+  /* ---------------------------------------------------------------- the '…위주' multipliers (history, opt-in)
+   * 학습 덜 한 것 위주 (focusLess) — lessMultipliers(pool, infoOf, now) → Map key → 1..4. infoOf(key) → { n, lastAt }:
+   * the item's answers in this practice mode and its last answer in any mode (ms; 0 = never / unknown). Relative to
+   * the pool, so the same history reads the same after a break:
+   *   fewer = 1 − ln(1 + n) / ln(1 + the most answers of any item in the pool)   (0 when nothing has answers)
+   *   stale = ln(1 + hours from lastAt to the newest lastAt in the pool) / ln(1 + 14 · 24), capped at 1; 1 when
+   *           there is no lastAt (never practised, or practised before it was kept); ½ when lastAt is more than a
+   *           day ahead of the clock (another device's fast clock: unknown) — such a stamp is not the pool's newest
+   *   mult  = 1 + 3 · (0.6 · fewer + 0.4 · stale)   (never practised ×4; the most practised, just now ×1) */
+  const LESS_MAX = 4, LESS_FEWER = 0.6, STALE_HOURS = 14 * 24;
+  const HOUR = 3600000, SKEW_MS = 24 * HOUR;
+  function lessMultipliers(pool, infoOf, now) {
+    const limit = (Number.isFinite(now) ? now : Date.now()) + SKEW_MS;
+    const info = uniqueKeys(pool).map((k) => {
+      const s = (infoOf && infoOf(k)) || {};
+      const n = Number(s.n) > 0 ? Number(s.n) : 0;
+      const at = Number(s.lastAt) > 0 ? Number(s.lastAt) : 0;
+      return { k, n, at, future: at > limit };
+    });
+    let most = 0, ref = 0;
+    for (const x of info) {
+      if (x.n > most) most = x.n;
+      if (!x.future && x.at > ref) ref = x.at;
+    }
+    const out = new Map();
+    for (const x of info) {
+      const fewer = most > 0 ? 1 - Math.log1p(x.n) / Math.log1p(most) : 0;
+      const stale = x.future ? 0.5 : !(x.at > 0) ? 1
+        : ref > x.at ? Math.min(1, Math.log1p((ref - x.at) / HOUR) / Math.log1p(STALE_HOURS)) : 0;
+      out.set(x.k, 1 + (LESS_MAX - 1) * (LESS_FEWER * fewer + (1 - LESS_FEWER) * stale));
+    }
+    return out;
+  }
+
+  // A char's answers in this mode (컨닝 answers included: practised all the same).
+  function charAnswers(stats, ch, mode) {
+    const c = charStats(stats, ch);
+    if (!c || typeof c !== 'object') return 0;
+    const r = cnt(c.read, 'ok') + cnt(c.read, 'ng') + cnt(c.read, 'cheat');
+    const w = cnt(c.write, 'o') + cnt(c.write, 't') + cnt(c.write, 'x') + cnt(c.write, 'cheat');
+    return mode === 'read' ? r : mode === 'write' ? w : r + w;
+  }
+
+  /* statsOf for kana (finite tests and 무한 runs): the char's '…위주' multipliers from the history before the test —
+   * the history is not even looked at for an option that is off (all off: { mult: 1 } for every char).
+   *   focusLess       학습 덜 한 글자 위주  lessMultipliers over the pool (answers in this mode, stats.chars[ch].last), 1..4
+   *   focusWrong      틀린 글자 위주       1 + 2 · wrongness (overall rate blended with the recent answers), 1..3
+   *   focusConfusable 헷갈리는 글자 위주   ×3 with a look-alike in the pool, ×1.75 with look-alikes elsewhere only
+   * → { mult, less, wrong, look }: mult = their product made a multiplier for the pool by focusScale (as it is while
+   * no char's is over ×6; else the pool's spread scaled to ×6 in log space). now: the clock (lastAt check). */
+  function endlessStatsOf(stats, mode, settings, data, pool, now) {
+    const st = settings || {};
+    const keys = uniqueKeys(pool);
+    const available = new Set(keys);
+    const less = st.focusLess
+      ? lessMultipliers(keys, (ch) => { const c = charStats(stats, ch); return { n: charAnswers(stats, ch, mode), lastAt: c ? nat(c.last) : 0 }; }, now)
+      : null;
+    const memo = new Map();
+    const factors = (ch) => {
+      if (memo.has(ch)) return memo.get(ch);
+      const l = (less && less.get(ch)) || 1;
+      const wrong = st.focusWrong ? 1 + 2 * wrongness(stats, ch, mode) : 1;
+      let look = 1;
+      const k = data && data.kana && data.kana[ch];
+      if (st.focusConfusable && k && k.confusables && k.confusables.length) {
+        look = k.confusables.some((p) => available.has(p)) ? 3 : 1.75;
+      }
+      const f = { less: l, wrong, look, p: l * wrong * look };
+      memo.set(ch, f);
+      return f;
+    };
+    const scale = st.focusLess || st.focusWrong || st.focusConfusable ? focusScale(keys.map((ch) => factors(ch).p)) : focusMult;
     return (ch) => {
-      const c = charStats(stats, ch);
-      let x = 0, t = 0, seen = false, lastAt = 0;
-      const marks = [];
-      if (c) {
-        for (const e of c.recent || []) {
-          if (mode && e.m && e.m !== mode) continue;
-          marks.push(e.g);
-          if (e.g === 'x') x++;
-          else if (e.g === 't') t++;
-        }
-        const r = c.read.ok + c.read.ng + c.read.cheat, w = c.write.o + c.write.t + c.write.x + c.write.cheat;
-        seen = (mode === 'read' ? r : mode === 'write' ? w : r + w) > 0;
-        lastAt = nat(c.last);
-      }
-      let mult = 1;
-      const k = data && data.kana[ch];
-      if (settings && settings.focusConfusable && k && k.confusables.length) {
-        mult = k.confusables.some((p) => available.has(p)) ? 3 : 1.75;
-      }
-      // 틀린 글자 위주: same scale as 단어장's 틀린 것 위주 (1 + 2 · wrong rate), on top of the small ✕/△ nudge
-      if (settings && settings.focusWrong) mult *= 1 + 2 * wrongness(stats, ch, mode);
-      return { x, t, miss: missScore(marks), seen, lastAt, mult };
+      const f = factors(ch);
+      return { mult: scale(f.p), less: f.less, wrong: f.wrong, look: f.look };
     };
   }
 
@@ -831,7 +960,7 @@
     groupFor, findLookalikeAnswer, charsWithReading, checkReading,
     emptyStats, sanitizeStats, recordReading, recordWriting, markOfVerdict, summarize, recordSession,
     charMastery, topConfusions, orderTrouble, hasHistory,
-    endlessStart, nextEndless, endlessRecord, endlessStatsOf, endlessPity, endlessOdds,
-    missScore, finiteWeights, pickFinite,
+    endlessStart, nextEndless, endlessRecord, endlessStatsOf, endlessOdds,
+    pickFinite, focusTable, focusMult, focusScale, lessMultipliers, balanceAlpha,
   };
 });

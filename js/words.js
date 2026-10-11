@@ -110,7 +110,7 @@
    * the 로마자 hint pre-revealed). */
   const FORMS = ['hira', 'text', 'kanji'];
   const DEFAULT_PREFS = {
-    mode: 'read', kinds: 'both', count: 10, focusWrong: false,
+    mode: 'read', kinds: 'both', count: 10, focusWrong: false, focusLess: false,
     withMeaning: false, meaningMode: 'type', answerInput: 'pen', promptView: 'ko', source: 'auto',
     inputMode: 'ime', inputScript: 'hira',      // the add/edit form's kana input method (remembered)
     typedMode: 'romaji', typedScript: 'hira',   // the typed answer box of 쓰기 / 한자 읽기 (remembered)
@@ -124,6 +124,7 @@
     if (['both', 'word', 'sentence'].includes(r.kinds)) o.kinds = r.kinds;
     if (COUNTS.includes(r.count)) o.count = r.count;
     o.focusWrong = !!r.focusWrong;
+    o.focusLess = !!r.focusLess;               // 학습 덜 한 것 위주 (prefs saved before it existed: off)
     o.withMeaning = !!r.withMeaning;
     if (['type', 'choice'].includes(r.meaningMode)) o.meaningMode = r.meaningMode;
     if (['pen', 'type'].includes(r.answerInput)) o.answerInput = r.answerInput;
@@ -280,18 +281,6 @@
     return parts.join(' · ') + (code >= 0 && code < 11172 && code % 28 ? '이' : '가') + ' 있어요';
   }
 
-  function recentOf(e, mode) {
-    const keys = MODE_KEYS[mode] || MODE_KEYS.read;
-    let x = 0, t = 0, n = 0;
-    for (const r of statsOf(e).recent) {
-      if (!keys.includes(r.m)) continue;
-      n++;
-      if (r.g === 'x') x++;
-      else if (r.g === 't') t++;
-    }
-    return { x, t, n };
-  }
-
   function practiceTotals(e, mode) {
     const s = statsOf(e);
     if (mode === 'write') return { good: s.write.o, tri: s.write.t, bad: s.write.x };
@@ -305,13 +294,6 @@
     const n = p.good + p.tri + p.bad;
     return n ? (p.bad + 0.5 * p.tri) / n : 0;
   }
-  const seenIn = (e, mode) => { const p = practiceTotals(e, mode); return p.good + p.tri + p.bad > 0; };
-
-  // 틀린 것 위주 multiplier (1 when off): 1 + 2 · lifetime wrong rate of this practice kind (≤ 3×). It speeds up the
-  // entry's pity clock in Quiz's selection (SPEC-words A) — mistakes come round sooner, they never take over.
-  function weightOf(e, mode, focusWrong) {
-    return focusWrong ? 1 + 2 * wrongRate(e, mode) : 1;
-  }
 
   // The recent marks of this practice kind, oldest first (both parts count for read+뜻 / 한자 읽기 — MODE_KEYS).
   function recentMarks(e, mode) {
@@ -319,20 +301,53 @@
     return statsOf(e).recent.filter((r) => keys.includes(r.m)).map((r) => r.g);
   }
 
-  // Quiz statsOf for entry ids — finite runs (Quiz.pickFinite) and 무한 모드 (Quiz.nextEndless) alike: recent ✕ / △
-  // and their decayed miss score, practised in this kind or not, lastAt = the entry's last answer in any practice
-  // kind (stats.last; the rank / head start of the "not practised for a while" weight), 틀린 것 위주 multiplier.
-  // seen also counts 컨닝 / 힌트 answers (stats.cheat, any kind — the store keeps no per-kind count): a ○ with a hint
-  // is not a success, yet the word was practised — as "never practised" it would get the new-word boost and come
-  // back in every run for as long as the learner keeps taking the hint.
-  function endlessStatsFor(byId, mode, focusWrong) {
-    const Q = QZ();
-    return (id) => {
+  // 0..1: how badly the entry has gone in this practice kind — the lifetime wrong rate blended with its recent
+  // answers (✕ 1, △ ½), so a fresh mistake counts at once and fades as the learner gets it right again.
+  function wrongScore(e, mode) {
+    const marks = recentMarks(e, mode);
+    const rec = marks.length ? marks.reduce((a, g) => a + (g === 'x' ? 1 : g === 't' ? 0.5 : 0), 0) / marks.length : 0;
+    return Math.min(1, 0.5 * wrongRate(e, mode) + 0.5 * rec);
+  }
+
+  // 틀린 것 위주 multiplier (1 when off): 1 + 2 · wrongScore (≤ 3×). Only a weight in Quiz's selection (SPEC-words A):
+  // missed words come up more often, the others keep coming up.
+  function weightOf(e, mode, focusWrong) {
+    return focusWrong ? 1 + 2 * wrongScore(e, mode) : 1;
+  }
+
+  // Answers of this practice kind, 컨닝 / 힌트 answers included (stats.cheat: any kind — the store keeps no per-kind
+  // count; a ○ with a hint is no success, yet the word was practised).
+  function answersIn(e, mode) {
+    const p = practiceTotals(e, mode);
+    return p.good + p.tri + p.bad + statsOf(e).cheat;
+  }
+
+  /* Quiz statsOf for entry ids — finite runs (Quiz.pickFinite) and 무한 모드 (Quiz.nextEndless) alike: the entry's
+   * '…위주' multipliers from its history (SPEC-words A); with both options off the history is not looked at
+   * (every entry { mult: 1 }), so a run depends on nothing but itself.
+   *   focus.focusWrong  틀린 것 위주       1 + 2 · wrongScore, 1..3
+   *   focus.focusLess   학습 덜 한 것 위주  Quiz.lessMultipliers over the entries in byId (answersIn this kind,
+   *                                        stats.last), 1..4
+   * focus: the practice prefs ({ focusWrong, focusLess }; `true` alone means 틀린 것 위주, as before); byId: a Map
+   * id → entry (any { get } for 틀린 것 위주 alone; focusLess needs the pool: `ids`, else byId's keys); now: the clock
+   * (a stats.last over a day ahead counts as unknown). → { mult, less, wrong }: mult = their product made a
+   * multiplier for the pool by Quiz.focusScale (as it is while no entry's is over ×6; else the spread scaled to ×6). */
+  function endlessStatsFor(byId, mode, focus, ids, now) {
+    const f = focus === true ? { focusWrong: true } : focus || {};
+    if (!f.focusWrong && !f.focusLess) return () => ({ mult: 1, less: 1, wrong: 1 });
+    const pool = ids || (byId && typeof byId.keys === 'function' ? Array.from(byId.keys()) : []);
+    const less = f.focusLess
+      ? QZ().lessMultipliers(pool, (id) => { const e = byId.get(id); return e ? { n: answersIn(e, mode), lastAt: statsOf(e).last } : null; }, now)
+      : null;
+    const factors = (id) => {
       const e = byId.get(id);
-      if (!e) return { x: 0, t: 0, miss: 0, seen: false, lastAt: 0, mult: 1 };
-      const r = recentOf(e, mode);
-      const s = statsOf(e);
-      return { x: r.x, t: r.t, miss: Q.missScore(recentMarks(e, mode)), seen: seenIn(e, mode) || s.cheat > 0, lastAt: s.last, mult: weightOf(e, mode, focusWrong) };
+      const l = (e && less && less.get(id)) || 1;
+      return { less: l, wrong: e ? weightOf(e, mode, !!f.focusWrong) : 1 };
+    };
+    const scale = QZ().focusScale(pool.map((id) => { const x = factors(id); return x.less * x.wrong; }));
+    return (id) => {
+      const x = factors(id);
+      return { mult: scale(x.less * x.wrong), less: x.less, wrong: x.wrong };
     };
   }
 
@@ -348,16 +363,20 @@
       && (opt.mode !== 'kanji' || hasKanji(e)));
   }
 
+  // Questions in a run: 전체 → every entry; 10 / 20 / 30 → that many, even over fewer entries (each then comes up
+  // about count / entries times, balanced within the run); 무한 → no end.
   function questionCount(count, available) {
+    if (!(available > 0)) return 0;
     if (count === 'endless') return Infinity;
     if (count === 'all') return available;
-    return Math.min(available, Math.max(0, Number(count) || 0));
+    return Math.max(0, Math.floor(Number(count) || 0));
   }
 
-  /* Finite run: entry ids, no repeats, drawn by Quiz.pickFinite (the "rigged random" across runs, SPEC-words A):
-   * never-practised entries first, then the ones practised longest ago (rank by stats.last), the last runs' entries
-   * rarely; mistakes nudge (≤ 1.5×), 틀린 것 위주 speeds their clock (≤ 3×). Always shuffled (전체: every entry).
-   * opts.now: the clock (default Date.now()) — a stats.last over a day ahead of it counts as unknown. */
+  /* Finite run: entry ids by Quiz.pickFinite (SPEC-words A) — each run on its own: count ≤ entries → that many
+   * distinct entries, a plain random draw (틀린 것 위주 / 학습 덜 한 것 위주 only weight it); 전체 → every entry once;
+   * count > entries → every entry at least once (count / entries each ± 1 with both options off), in the in-run
+   * balancing order. Always in a random order.
+   * opts: { count, mode, focusWrong, focusLess, now } (now: the clock — a stats.last over a day ahead is unknown). */
   function buildQueue(entries, opts, rng) {
     const Q = QZ();
     const o = opts || {};
@@ -365,7 +384,7 @@
     for (const e of entries || []) if (e && e.id != null && !byId.has(e.id)) byId.set(e.id, e);
     const ids = Array.from(byId.keys());
     const n = o.count === 'endless' ? ids.length : questionCount(o.count, ids.length);
-    return Q.pickFinite(ids, n, endlessStatsFor(byId, o.mode, !!o.focusWrong), rng || Math.random, { focusWrong: !!o.focusWrong, now: o.now });
+    return Q.pickFinite(ids, n, endlessStatsFor(byId, o.mode, o, ids, o.now), rng || Math.random);
   }
 
   const foldMeaning = (s) => String(s == null ? '' : s).normalize('NFKC').toLowerCase().replace(/[\s.,!?~〜()（）\[\]]/g, '');
@@ -1108,8 +1127,8 @@
 
   const pure = {
     EXAMPLES, DEFAULT_PREFS, NO_TAG, normalizePrefs, statsOf, entrySummary, hasKanji, meaningsOf, displayMeaning,
-    foldSearch, searchText, filterEntries, tagsOf, overallMark, answerMarks, penHeadline, recentOf,
-    wrongRate, weightOf, recentMarks, endlessStatsFor, endlessStartFor, practicePool, questionCount, buildQueue, meaningChoices, checkTypedWrite,
+    foldSearch, searchText, filterEntries, tagsOf, overallMark, answerMarks, penHeadline,
+    wrongRate, wrongScore, weightOf, answersIn, recentMarks, endlessStatsFor, endlessStartFor, practicePool, questionCount, buildQueue, meaningChoices, checkTypedWrite,
     checkTypedReading, furigana, liveRomaji, toggleMark, toggleSmall, insertText, backspaceText, modifyBefore,
     showsReading, cellTarget, scriptOf, summarize, retryIds, badCharKind, kanaFieldError, kanjiFieldError,
     compactText, readingSample, typingSample, splitJa, effectiveTag,
@@ -2272,6 +2291,8 @@
         { value: 'endless', label: '∞ 무한', aria: '무한 — 그만할 때까지' },
       ], pr.count, (v) => set('count', v), 'seg-count'));
       opts.appendChild(toggleRow('틀린 것 위주', '자주 틀린 단어를 더 자주 내요.', pr.focusWrong, (v) => set('focusWrong', v), 'focusWrong'));
+      opts.appendChild(toggleRow('학습 덜 한 것 위주', '덜 풀어 본 단어, 오래 안 푼 단어를 더 자주 내요.', pr.focusLess, (v) => set('focusLess', v), 'focusLess'));
+      opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, '「…위주」는 그 단어를 더 자주 낼 뿐, 다른 단어도 계속 나와요. 함께 켜면 효과가 겹쳐요.'));
       if (pr.mode === 'read') {
         opts.appendChild(toggleRow('뜻도 맞히기', '발음을 맞힌 다음 한국어 뜻도 물어봐요.', pr.withMeaning, (v) => set('withMeaning', v), 'withMeaning'));
         if (pr.withMeaning) opts.appendChild(meaningModeSeg());
@@ -2292,7 +2313,10 @@
       opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, '손글씨 채점의 깐깐함과 펜 전용 모드는 「연습」 탭의 세부 설정을 따라요.'));
 
       const n = pool.length;
-      const qn = pr.count === 'endless' ? '무한 모드 (그만할 때까지)' : `${questionCount(pr.count, n)}문제`;
+      const qc = questionCount(pr.count, n);
+      // every entry once (전체, or a count equal to the entries): the '…위주' options have nothing to weigh
+      const once = qc === n && (pr.focusWrong || pr.focusLess);
+      const qn = pr.count === 'endless' ? '무한 모드 (그만할 때까지)' : `${qc}문제${qc > n ? ' (같은 단어가 여러 번 나와요)' : once ? ' (모두 한 번씩 나와서 「…위주」는 적용되지 않아요)' : ''}`;
       const startBtn = h('button', { type: 'button', class: 'btn btn-primary btn-lg ws-start', 'data-k': 'start', disabled: n ? null : true, on: { click: () => startRun(pool, pr) } },
         icon('play'), '연습 시작');
       const emptyFilter = !n && !src.useSel && src.filtered && !src.base.length;
@@ -2315,7 +2339,7 @@
 
   /* =================================================================== practice run */
 
-  /* S.run = { mode, prefs (the 원고지 view chosen during the run updates it), active, endless: null | { run, pool },
+  /* S.run = { mode, prefs (the 원고지 view chosen during the run updates it), active, endless: null | { run, pool, mult },
    *           questions: [{ id, retry }], index, answers, cur, entries: Map id → entry snapshot, pool: [entry] (4지선다) } */
   function startRun(pool, pr, opts) {
     const o = opts || {};
@@ -2324,7 +2348,7 @@
     const endless = !o.ids && pr.count === 'endless';
     const run = {
       mode: pr.mode, prefs: Object.assign({}, pr), active: true, label: o.label || null,
-      endless: endless ? { run: endlessStartFor(), pool: pool.map((e) => e.id) } : null,
+      endless: endless ? endlessFor(entries, pr) : null,
       questions: [], index: 0, answers: [], cur: null, entries, pool: words(), openCheat: null,
     };
     if (endless) run.questions.push(pickEndless(run));
@@ -2340,12 +2364,15 @@
     go('practice');
   }
 
+  // A 무한 run's state: the run, its pool, and the '…위주' multipliers taken from the history before the run (its
+  // own answers are the balancing's and the retries' business — SPEC-words A).
+  function endlessFor(entries, pr) {
+    const ids = Array.from(entries.keys());
+    return { run: endlessStartFor(), pool: ids, mult: QZ().focusTable(ids, endlessStatsFor(entries, pr.mode, pr, ids)) };
+  }
+
   function pickEndless(run) {
-    const Q = QZ();
-    // weights from the entries' live stats (answers of this run included), not the snapshots taken at the start
-    const live = { get: (id) => (Store && Store.words.get(id)) || run.entries.get(id) };
-    const statsOf = endlessStatsFor(live, run.mode, run.prefs.focusWrong);
-    const pick = Q.nextEndless(run.endless.run, run.endless.pool, statsOf, Math.random);
+    const pick = QZ().nextEndless(run.endless.run, run.endless.pool, run.endless.mult, Math.random);
     return { id: pick.key, retry: pick.retry };
   }
 
