@@ -1164,7 +1164,8 @@
     return { cheat: false, graded: false, practice: false };
   }
 
-  // A graded answer of the running test (무한 모드: a ✕ — or △ in writing — is scheduled for a spaced retry).
+  // A graded answer of the running test (무한 모드: a ✕ — or △ in writing — is scheduled for a spaced retry, once per
+  // char per run and within 15 % of the questions; SPEC-words A).
   function addAnswer(t, answer) {
     t.answers.push(answer);
     if (t.endless) Q.endlessRecord(t.endless.run, answer.ch, answer.mark, Math.random, t.endless.pool.length);
