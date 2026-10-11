@@ -359,17 +359,15 @@
 
 .wp-layout { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
 /* The prompt card is small on purpose — the 원고지 and its tools come first on the screen: a top line in small type
- * (what to write · N칸 · 단어/문장 · tags), the question (the 뜻 at title size with the 발음 inline, or the kanji with
- * its instruction beside it), one row of controls (답안 형태 · 읽기 선택 · 힌트) and, with a pen, the buttons. */
+ * (what to write · 단어/문장 · tags — never the answer's length), the question (the 뜻 at title size with the 발음 inline
+ * when 문제 보기 shows it, or the kanji with its instruction beside it), the hints seen so far (one short line each, side by
+ * side where they fit), 힌트 itself when typing, and with a pen the buttons. */
 .wp-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; border-top: 4px solid var(--hira); padding: 10px 14px 12px; }
 @media (max-width: 559px) { .wp-prompt { padding: 10px 12px; } }
 .wp-prompt-main { gap: 6px; }
 .wp-prompt.is-kanji { border-top-color: var(--shu); }
 .wp-meta { font-size: 0.88rem; line-height: 1.4; gap: 2px 8px; }
 .wp-meta .prompt-label { font-size: inherit; }
-.wp-count { color: var(--ink-3); white-space: nowrap; }
-.wp-count::before { content: "·"; margin-right: 8px; }
-.wp-count:empty { display: none; }
 .wp-q { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 12px; min-width: 0; }
 .wp-meaning { font-family: var(--font-head); font-weight: 700; font-size: clamp(1.35rem, 1.15rem + 0.8vw, 1.7rem); line-height: 1.25; overflow-wrap: anywhere; min-width: 0; }
 .wp-meaning.is-long { font-size: clamp(1.15rem, 1.05rem + 0.5vw, 1.35rem); }
@@ -378,35 +376,29 @@
 .wp-say { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
 .wp-say-romaji { font-size: 1.05rem; letter-spacing: 0.02em; }
 .wp-say-ko { color: var(--ink-2); font-size: 1rem; }
+/* 힌트 when typing: on its own row under the question (with a pen it is in the act row) */
 .wp-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
-.wp-ctl:not(:has(> .wp-form:not(:empty):not([hidden]), > .wp-hint:not([hidden]))) { display: none; }
+.wp-ctl:not(:has(> .wp-hint:not([hidden]))) { display: none; }
 .wp-ctl .wp-hint { margin-left: auto; padding-inline: 12px; }
 .wp-hint[disabled] { opacity: 0.55; }
-/* '(보고 쓰기)' only where it fits on the row beside the 답안 형태 choice (it stays in the button's accessible name) */
-@media (max-width: 439px) {
-  .wp-hint-what { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-}
 .wp-hint-tag { color: var(--shu-ink); background: var(--shu-soft); border-color: var(--shu); }
-.wp-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
-.wp-form:empty { display: none; }
-/* 답안 형태 / 읽기 선택: the legend inline before the options (float: not the fieldset's rendered legend, so a flex item) */
-.wp-form-seg { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
-.wp-form-seg > .field-label { float: left; margin: 0; font-size: 0.8rem; color: var(--ink-3); }
-.wp-form-seg .seg { gap: 4px; }
-.wp-form-seg .seg-face { min-height: 40px; padding: 0 12px; font-size: 0.92rem; border-radius: 10px; }
-@media (pointer: coarse) { .wp-form-seg .seg-face { min-height: 44px; } }
-/* the chosen form: the chip style (not a filled black block next to 채점) */
-.wp-form-seg .seg-opt input:checked + .seg-face { background: var(--shu-soft); border-color: var(--shu); color: var(--ink); box-shadow: inset 0 0 0 1px var(--shu); }
-/* phones: '답안 형태' is read out but not shown — the instruction above names the form, and the row stays one line */
-@media (max-width: 559px) {
-  .wp-form-seg:not(.wp-read-seg) > .field-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* The step number beside the bulb ('힌트 2: 글자 수' → bulb + 2) only where the act row shows the button as its icon (the
+ * same container widths as app.css's .act-text rules); where the words show, they carry the number. */
+.wp-hint-n { display: none; font-size: 0.8rem; font-weight: 700; line-height: 1; margin-left: 1px; align-self: flex-start; margin-top: 11px; font-variant-numeric: tabular-nums; }
+@supports (container-type: inline-size) {
+  @container (max-width: 27rem) { .act-row:has(> .wp-hint) .wp-hint-n { display: inline; } }
 }
-.wp-read-hint { flex-basis: 100%; color: var(--ink-3); font-size: 0.8rem; line-height: 1.45; margin: 0; }
-/* phones: the options say it ('yon · 2칸' / 'shi · 1칸'); the why is read out but not shown */
-@media (max-width: 559px) {
-  .wp-read-hint { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@supports not (container-type: inline-size) {
+  @media (max-width: 559px) { .act-row .wp-hint-n { display: inline; } }
 }
-/* '(가타카나는 가타카나로)' after the instruction: not on a narrow card (the 답안 형태 choice names the form) */
+/* The hints seen so far — one short line each (뜻 · 글자 수 · 발음), side by side where they fit. */
+.wp-hints { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 16px; min-width: 0; font-size: 0.92rem; line-height: 1.45; }
+.wp-hints:empty { display: none; }
+.wp-hint-line { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; overflow-wrap: anywhere; }
+.wp-hint-line .wp-k { margin-right: 0; color: var(--shu-ink); background: var(--shu-soft); border-color: var(--shu); }
+.wp-hint-line .wp-say-romaji { font-size: 1rem; }
+.wp-hint-line .wp-say-ko { font-size: 0.92rem; }
+/* ' · 히라가나·가타카나·한자 모두 돼요' after the instruction: not on a narrow card (read out, not shown) */
 @media (max-width: 479px) {
   .wp-label-more { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
@@ -471,6 +463,16 @@
 .wr-read { color: var(--ink-2); }
 .wr-note { color: var(--ink-2); font-size: 0.92rem; }
 .wr-strip-label { color: var(--ink-3); font-size: 0.85rem; }
+/* what the writing was graded as ('히라가나로 썼어요', '다른 읽기 なん으로 썼어요') */
+.wr-form { color: var(--ink-2); font-size: 0.92rem; }
+/* KanaAlign's messages: what is missing / extra / wrong, the points to memorise (촉음 っ, 장음 …) */
+.wr-issues { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.wr-issues li {
+  position: relative; padding: 4px 10px 4px 26px; border-radius: 8px; line-height: 1.5;
+  background: var(--ng-bg); border: 1px solid var(--ng-line); color: var(--ink);
+}
+.wr-issues li::before { content: "!"; position: absolute; left: 11px; top: 4px; font-weight: 700; color: var(--ng); }
+.wm-skipped { color: var(--ink-2); }
 .wr-typed { display: grid; gap: 12px; }
 /* js/kanji-data.js could not be loaded: nothing graded, 다시 불러와서 채점 / 히라가나로 쓰기 */
 .wr-unloaded { border-left: 4px solid var(--tri); }
@@ -495,6 +497,18 @@
 .wc-x { background: var(--ng-bg); border-color: var(--ng-line); }
 .wc-x .wc-mark { color: var(--ng); }
 .wc-na .wc-mark { color: var(--ink-3); }
+/* the alignment strip: a missing character (dashed red, 빠짐), an extra cell (its ink as written, 필요 없음), the answer
+ * after 모르겠어요 (no marks) */
+.wc-cell.wc-miss { background: transparent; border: 2px dashed var(--ng); }
+.wc-miss .wc-ch { color: var(--ng); }
+.wc-miss .wc-mark, .wc-extra .wc-mark { color: var(--ng); font-size: 0.72rem; white-space: nowrap; }
+.wc-cell.wc-extra { width: auto; min-width: 56px; padding-inline: 6px; background: var(--card-2); border-style: dashed; }
+.wc-ink { display: block; width: 36px; height: 36px; margin-bottom: 2px; }
+.wc-ink > svg { display: block; width: 100%; height: 100%; }
+.wc-cell.wc-skip { min-height: 56px; }
+.wc-note { color: var(--ink); font-size: 0.95rem; line-height: 1.5; }
+/* a missing character: its right stroke order only (the panel's headline would call it an empty cell) */
+.wc-detail[data-type="missing"] .wres-head { display: none; }
 .wc-detail { display: grid; gap: 8px; min-width: 0; }
 .wc-detail:empty { display: none; }
 .wc-detail-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--ink-2); }
@@ -516,9 +530,13 @@ span.wr-qi-face:not(.jp) { font-family: var(--font-head); font-weight: 700; font
 .wr-qi-cell.wc-o { border-bottom-color: var(--ok-line); }
 .wr-qi-cell.wc-t { background: var(--tri-bg); border-bottom-color: var(--tri); }
 .wr-qi-cell.wc-x { background: var(--ng-bg); border-bottom-color: var(--ng); }
+.wr-qi-cell.wc-miss { border: 1.5px dashed var(--ng); color: var(--ng); }
+.wr-qi-cell.wc-extra { color: var(--ink-3); background: var(--card-2); text-decoration: line-through; text-decoration-color: var(--ng); }
 .wr-parts { display: inline-flex; flex-wrap: wrap; gap: 6px; font-size: 0.85rem; color: var(--ink-2); }
 .wr-part { display: inline-flex; align-items: center; gap: 4px; }
 .wr-ovr { color: var(--ink-3); font-size: 0.8rem; }
 .wr-mean-line { color: var(--ink-2); }
 .wr-list .qdetail { justify-items: stretch; }
 .wr-list .qdetail > .wp-entry { padding: 4px 4px 0; }
+/* an extra cell's ink: smaller than a graded cell's comparison (it is only shown, not compared) */
+.wc-detail[data-type="extra"] .wres-mine-svg { width: min(100%, 140px); }

@@ -12,28 +12,34 @@
  * Practice modes:
  *   read  — 단어 읽기: kana shown → reading typed (romaji / 한글) → KanaText.checkReading, per-segment marks;
  *           optional 뜻도 맞히기 step (직접 입력 + 「맞은 걸로 할게요」 / 4지선다).
- *   write — 쓰기 (한국어 → 일본어, SPEC-words J, L): Korean meaning shown, written on the GridPad in the chosen
- *           답안 형태 — 히라가나 (words' default: テスト → てすと), 표기대로 (sentences' default) or 한자 섞어 — every
- *           cell judged against that form's character (kana / extras by KanaRecognizer with { box }, kanji by
- *           KanjiJudge; no stroke data → neutral '–', not graded) — or typed (every form accepted).
- *           Alternative readings (SPEC-words K, entry.alts: 何 なに／なん): readings that fill the same cells are all
- *           judged and the best entry grade is kept; readings of another length are picked with 읽기 선택.
+ *   write — 쓰기 (한국어 → 일본어, SPEC-words J, L, M): Korean meaning shown, written by hand on an open-length GridPad
+ *           (open: true — the run of cells never tells the answer's length; there is always an empty cell after the
+ *           last one written, and the learner presses 채점 when done) or typed. The written cells are aligned to every
+ *           accepted spelling at once by KanaAlign.grade (js/align.js): hiragana (テスト → てすと), as written, the kanji
+ *           form, for every reading in [text, ...alts] (SPEC-words K: 何 なに／なん) — no 답안 형태 / 읽기 선택 to pick. Each
+ *           matched cell is judged against its character (kana / extras by KanaRecognizer with { box }, kanji by KanjiJudge;
+ *           no stroke data → neutral '–', not graded); missing and extra characters are named (촉음 っ, 장음, 요음 …).
  *           An answer with no gradable cell is '–' (not recorded, not ✕ in the run). When js/kanji-data.js cannot
- *           be loaded, a kanji-form answer is not graded at all: a notice offers 다시 불러와서 채점 / 히라가나로 쓰기.
- *   kanji — 한자 읽기 (SPEC-words I): the kanji form shown → the hiragana reading written (or typed) → 뜻 step.
+ *           be loaded and the writing reads as the kanji form, nothing is graded: a notice offers 다시 불러와서 채점 /
+ *           지우고 가나로 쓰기.
+ *   kanji — 한자 읽기 (SPEC-words I): the kanji form shown → the reading written (open-length pad) or typed → 뜻 step.
+ * Hints (user request): a ladder, one step per press of 힌트 — 1 뜻, 2 글자 수 (the cells are tinted too), 3 로마자 발음;
+ *   a step already on screen is skipped (쓰기 shows the meaning: 글자 수 → 로마자; 문제 보기 한국어 + 발음 shows the
+ *   reading). The answer's length is shown only by 힌트 2. 한자 읽기 after the 뜻 hint skips its 뜻 맞히기 step (not
+ *   recorded). A hint tags the answer like 컨닝 does in the kana tests (the run keeps the highest step reached).
  * Recording: per entry KanaStore.words.recordResult (read / write / meaning / kanji reading + meaning parts);
  *   per kana cell KanaApp.recordWriting(ch, mark, { source: 'word' }) (records screen; extras / kanji are not).
- *   A 컨닝 or a hint (힌트: romaji, then 보고 쓰기) tags the answer like 컨닝 does in the kana tests.
  * UI decisions (beyond the spec text):
  *   - 단어 읽기 answered with the same kana (Japanese IME on) is not graded: a nudge asks for romaji / 한글,
  *     as the single-kana reading test does (copying the shown kana proves nothing).
  *   - 쓰기 / 한자 읽기 타자 start in 로마자 → 가나 (remembered); romaji typed with the keyboard mode is converted with
  *     KanaText.romajiToKana when graded. A writing test grades the kana it spells (tokyo → ときょ ≠ とうきょう).
- *   - 읽기 선택 names the readings by their cell count (2칸 / 1칸), with their romaji only once the reading is on
- *     screen anyway (문제 보기 한국어 + 발음, or the 발음 hint): the options must not show the answer.
- *   - Per-char writing stats are recorded only for written (non-empty) kana cells of a graded answer;
- *     모르겠어요 is the same everywhere: the entry ✕ (its 뜻 part too when there is one), no per-char results, the whole
- *     answer shown (every accepted reading and form), 다시 써보기 with the model glyphs when written by hand.
+ *   - Per-char writing stats are recorded only for kana matched to a written cell of a graded answer (not when the
+ *     writing is another word altogether); 모르겠어요 is the same everywhere: the entry ✕ (its 뜻 part too when there is
+ *     one and its 뜻 hint was not seen), no per-char results, the whole answer shown (every accepted reading and form),
+ *     다시 써보기 with the model glyphs (the reading as written; 한자 읽기: in hiragana) when written by hand.
+ *   - 힌트 numbers are the step's own (쓰기 starts at 「힌트 2: 글자 수」: step 1, the meaning, is the question); on a narrow
+ *     act row the button is its icon plus the number.
  *   - A question stopped after its first part was graded (reading done, 뜻 not yet) counts in 결과 with 뜻 '—'.
  *   - Practice sessions are not added to 기록's 최근 테스트 (Quiz's session schema has no words kind); the
  *     per-entry ○/△/✕ in the list and the per-char stats are the record.
@@ -41,10 +47,9 @@
  *     so particle / long-vowel leniency applies (watashi wa → わたし わ is right for わたしは).
  *   - 모르겠어요 in 손글씨 still offers 다시 써보기 (practice only), with the model glyphs (보고 쓰기) on.
  *   - Placeholders / help examples never come from the question's entry (no answer in an empty box).
- *   - Typed vs handwritten answers (SPEC-words L): a typed answer has no 답안 형태, so its kana script is never graded
- *     (テスト ← てすと / テスト, アメリカ人 ← あめりか人); handwritten cells hold the chosen form and each is judged against
- *     that form's character, so テスト drawn in 히라가나 cells is ✕ — the result says the cells were written in katakana
- *     and names 「표기대로」 (scriptSlip), it never regrades them.
+ *   - Typed vs handwritten answers: a typed answer's kana script is never graded (テスト ← てすと / テスト, アメリカ人 ←
+ *     あめりか人); handwriting is graded against the closest accepted spelling (KanaAlign), whose script then counts:
+ *     てスと for テスト is graded as てすと with a ✕ cell 'す 자리에 가타카나 ス를 썼어요'. The result names the form it matched.
  *   - 단어 선택 (list): 전체 선택 / 지금 목록 선택 (while a search · 보기 · 태그 filter is on) / 태그로 선택 chips (☐ none ·
  *     ⊟ some '6/21' · ☑ all, aria-pressed false | mixed | true) add to the selection and never replace it; a group already
  *     wholly selected is taken out instead (전체 해제 / 지금 목록 해제 / the chip again). The 태그 <select> only filters
@@ -66,10 +71,11 @@
 
   /* =================================================================== dependencies (looked up lazily) */
   const req = (p) => { if (!isNode) return null; try { return require(p); } catch (e) { return null; } };
-  let txN = null, qzN = null, kdN = null;
+  let txN = null, qzN = null, kdN = null, kaN = null;
   const TX = () => root.KanaText || txN || (txN = req('./romaji.js'));
   const QZ = () => root.Quiz || qzN || (qzN = req('./quiz.js'));
   const KD = () => root.KANA_DATA || kdN || (kdN = req('./kana-data.js'));
+  const KA = () => root.KanaAlign || kaN || (kaN = req('./align.js'));
 
   /* =================================================================== pure logic (Words._pure) */
 
@@ -94,17 +100,18 @@
     { text: 'みずを ください。', kanji: '水をください。', meaning: '물 주세요, 물을 주세요', type: 'sentence' },
   ].map((e) => Object.assign({ tag: '예시' }, e));
 
-  /* Answer forms (SPEC-words L) — what the cells of a written answer hold:
-   *   hira  — the reading in hiragana (KanaText.toHiragana; テスト → てすと, ー kept): the default for words
-   *   text  — the kana text as written (テスト stays katakana): the default for sentences
+  /* Answer forms (SPEC-words L, M) — the accepted spellings of an answer:
+   *   hira  — the reading in hiragana (KanaText.toHiragana; テスト → てすと, ー kept)
+   *   text  — the kana text as written (テスト stays katakana)
    *   kanji — the kanji form (only when the entry has one; never in 한자 읽기, which asks for the reading)
-   * Remembered per practice kind and entry type: answerForm / answerFormSentence (쓰기), readForm /
-   * readFormSentence (한자 읽기). Typed answers accept every form. */
+   * Every form is accepted, typed or written by hand (handwriting: KanaAlign picks the one the cells match); there
+   * is no form to choose any more (the old answerForm / readForm prefs are dropped). 문제 보기 (쓰기): 'ko' 한국어만
+   * (default; the old 'auto' that showed words' readings reads as 'ko') · 'ko+read' 한국어 + 발음 (the reading up front,
+   * the 로마자 hint pre-revealed). */
   const FORMS = ['hira', 'text', 'kanji'];
   const DEFAULT_PREFS = {
     mode: 'read', kinds: 'both', count: 10, focusWrong: false,
-    withMeaning: false, meaningMode: 'type', answerInput: 'pen', promptView: 'auto',
-    answerForm: 'hira', answerFormSentence: 'text', readForm: 'hira', readFormSentence: 'text', source: 'auto',
+    withMeaning: false, meaningMode: 'type', answerInput: 'pen', promptView: 'ko', source: 'auto',
     inputMode: 'ime', inputScript: 'hira',      // the add/edit form's kana input method (remembered)
     typedMode: 'romaji', typedScript: 'hira',   // the typed answer box of 쓰기 / 한자 읽기 (remembered)
     padView: 'auto',                            // the 원고지 view the learner last chose: 모든 칸 'grid' / 한 칸씩 'single'
@@ -120,13 +127,7 @@
     o.withMeaning = !!r.withMeaning;
     if (['type', 'choice'].includes(r.meaningMode)) o.meaningMode = r.meaningMode;
     if (['pen', 'type'].includes(r.answerInput)) o.answerInput = r.answerInput;
-    if (['auto', 'ko', 'ko+read'].includes(r.promptView)) o.promptView = r.promptView;
-    // 'kana' (before SPEC-words L: 「히라가나로 쓰기」 = the kana text) → the hiragana form
-    const form = (v) => (v === 'kana' ? 'hira' : v);
-    if (FORMS.includes(form(r.answerForm))) o.answerForm = form(r.answerForm);
-    if (FORMS.includes(r.answerFormSentence)) o.answerFormSentence = r.answerFormSentence;
-    if (['hira', 'text'].includes(r.readForm)) o.readForm = r.readForm;
-    if (['hira', 'text'].includes(r.readFormSentence)) o.readFormSentence = r.readFormSentence;
+    if (['ko', 'ko+read'].includes(r.promptView)) o.promptView = r.promptView;     // 'auto' (before the hint ladder) → 'ko'
     if (['auto', 'selected', 'list'].includes(r.source)) o.source = r.source;
     if (['ime', 'romaji', 'pad'].includes(r.inputMode)) o.inputMode = r.inputMode;
     if (['hira', 'kata'].includes(r.inputScript)) o.inputScript = r.inputScript;
@@ -134,13 +135,6 @@
     if (['hira', 'kata'].includes(r.typedScript)) o.typedScript = r.typedScript;
     if (['auto', 'grid', 'single'].includes(r.padView)) o.padView = r.padView;
     return o;
-  }
-
-  // The prefs key that remembers the answer form for this practice kind ('write' | 'kanji') and entry type.
-  function formPrefKey(mode, type) {
-    const sentence = type === 'sentence';
-    if (mode === 'kanji') return sentence ? 'readFormSentence' : 'readForm';
-    return sentence ? 'answerFormSentence' : 'answerForm';
   }
 
   const n0 = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0);
@@ -247,16 +241,6 @@
     return { tags, none };
   }
 
-  // Entry grade from its cells: ○ all ○ · △ no ✕ but some △ · ✕ otherwise. Neutral '-' cells are left out;
-  // nothing gradable → null (not recorded).
-  function gradeOfCells(marks) {
-    const m = (marks || []).filter((x) => x === 'o' || x === 't' || x === 'x');
-    if (!m.length) return null;
-    if (m.includes('x')) return 'x';
-    if (m.includes('t')) return 't';
-    return 'o';
-  }
-
   // Question mark from its parts: reading ○/△/✕ (+ meaning true/false/null when there was a 뜻 step).
   function overallMark(reading, meaning) {
     const r = reading === 'o' || reading === 't' ? reading : 'x';
@@ -273,16 +257,27 @@
     return { reading, mark: partial ? reading : overallMark(reading, meaningOk == null ? null : meaningOk) };
   }
 
-  /* Headline of the pen result panel. o = { skipped, practice, g ('o'|'t'|'x'|null), kanjiMode, empties, wrong }
-   * (wrong = ✕ cells that are not empty). After 모르겠어요 the skip headline shows until a 다시 써보기 is graded. */
+  /* Headline of the pen result panel. o = { skipped, practice, g ('o'|'t'|'x'|null), kanjiMode, missing, wrong, extra,
+   * swapped, different, mixed } — KanaAlign counts: characters missing, matched cells ✕ (swapped pairs among them), cells
+   * not needed; different = another word altogether; mixed = kanji and kana of the two forms mixed (or, 한자 읽기, the kanji
+   * copied). After 모르겠어요 the skip headline shows until a 다시 써보기 is graded. */
   function penHeadline(o) {
     const p = o || {};
     if (p.skipped && !p.practice) return '모르겠어요 — 정답을 보고 따라 써 보세요';
     if (!p.g) return '채점할 수 있는 칸이 없어요';
     if (p.g === 'o') return p.kanjiMode ? '읽기를 바르게 썼어요' : '모두 바르게 썼어요';
     if (p.g === 't') return '모양은 맞았어요 — 획순·방향·획수를 확인할 칸이 있어요';
-    if (p.empties) return `빈칸 ${p.empties}개${p.wrong ? ` · 틀린 칸 ${p.wrong}개` : ''}가 있어요`;
-    return '틀린 칸이 있어요';
+    if (p.different) return '정답과 많이 달라요';
+    if (p.mixed) return p.kanjiMode ? '한자가 아니라 읽기를 가나로 써요' : '한자와 가나를 섞은 표기는 정답이 아니에요';
+    const parts = [];
+    const wrong = (p.wrong || 0) - 2 * (p.swapped || 0);
+    if (p.missing) parts.push(`빠진 글자 ${p.missing}개`);
+    if (p.swapped) parts.push(`순서가 바뀐 글자 ${p.swapped}쌍`);
+    if (wrong > 0) parts.push(`틀린 글자 ${wrong}개`);
+    if (p.extra) parts.push(`필요 없는 칸 ${p.extra}개`);
+    if (!parts.length) return '틀린 칸이 있어요';
+    const last = parts[parts.length - 1], code = last.charCodeAt(last.length - 1) - 0xac00;
+    return parts.join(' · ') + (code >= 0 && code < 11172 && code % 28 ? '이' : '가') + ' 있어요';
   }
 
   function recentOf(e, mode) {
@@ -397,11 +392,11 @@
   }
 
   /* 쓰기 typed answer (SPEC-words J, K, L): any accepted reading ([text, ...alts]) in hiragana or as written, or the kanji
-   * form (spaces / 、。 ignored). A typed answer has no 답안 형태: the kana script is never graded (テスト ← てすと, ガクセイ;
-   * the kanji form's kana parts too: アメリカ人 ← あめりか人), the kanji must be the right ones. Handwriting differs on
-   * purpose: its cells hold one form, each judged against that form's character (テスト in 히라가나 cells is ✕ — the
-   * result then points at 「표기대로」, see scriptSlip). Romaji is converted with KanaText.romajiToKana and graded as the
-   * kana it spells (a writing test: the spelling must be right).
+   * form (spaces / 、。 ignored). The kana script of a typed answer is never graded (テスト ← てすと, ガクセイ; the kanji
+   * form's kana parts too: アメリカ人 ← あめりか人), the kanji must be the right ones. Handwriting differs on purpose: it is
+   * graded against the closest accepted spelling, each cell against that spelling's character (KanaAlign; てスと for テスト
+   * → 'す 자리에 가타카나 ス를 썼어요'). Romaji is converted with KanaText.romajiToKana and graded as the kana it spells (a
+   * writing test: the spelling must be right).
    * → { correct, empty, form: 'hira'|'text'|'kanji'|null, reading (the matched reading, as written) | null,
    *     romaji (romaji was converted), converted (the kana graded) | null, nudge: 'hangul'|null (not graded) } */
   function checkTypedWrite(input, entry) {
@@ -622,11 +617,10 @@
     return { value: h2 + v.slice(c), caret: h2.length };
   }
 
-  // 문제 보기 (쓰기): the reading is shown up front? 자동 = words yes, sentences no.
-  function showsReading(view, entry) {
-    if (view === 'ko+read') return true;
-    if (view === 'ko') return false;
-    return !entry || entry.type !== 'sentence';
+  // 문제 보기 (쓰기): the reading is shown up front only with 한국어 + 발음 (words and sentences alike: the reading is
+  // 힌트 3 otherwise; the old 자동 showed words' readings — it reads as 한국어만 now).
+  function showsReading(view) {
+    return view === 'ko+read';
   }
 
   /* ------------------------------------------------------------------ readings & answer forms (SPEC-words K, L) */
@@ -673,8 +667,8 @@
 
   const defaultForm = (entry) => (entry && entry.type === 'sentence' ? 'text' : 'hira');
 
-  // The form an entry is written in for the remembered pref: the pref when the entry offers it, else the default
-  // of its type, else hiragana ('text' of an all-hiragana word is its hiragana form).
+  // The form an answer is shown in (typed results, the 결과 list): the wanted form when the entry offers it, else the
+  // default of its type, else hiragana ('text' of an all-hiragana word is its hiragana form).
   function resolveForm(entry, pref, o) {
     const have = answerForms(entry, o).map((f) => f.form);
     const p = pref === 'kana' ? 'hira' : pref;
@@ -689,82 +683,124 @@
     return f ? f.readings : [];
   }
 
-  /* 읽기 선택: readings that fill the same cells (same length and spaces) are graded together (best grade wins);
-   * readings of another length need their own cells → [{ key, count (write cells), readings }], in reading order. */
-  function readingGroups(readings) {
-    const T = TX();
-    const groups = [];
-    for (const r of readings || []) {
-      const cells = T.cells(r);
-      const key = cells.map((c) => (c.kind === 'space' ? '_' : 'w')).join('');
-      let g = groups.find((x) => x.key === key);
-      if (!g) { g = { key, count: cells.filter((c) => c.kind === 'write').length, readings: [] }; groups.push(g); }
-      g.readings.push(r);
-    }
-    return groups;
+  /* ------------------------------------------------------------------ hints (user request: a ladder of three steps) */
+
+  /* 힌트: one step per press — 1 뜻, 2 글자 수, 3 로마자 발음 — skipping a step whose information is already on screen:
+   * 쓰기 asks with the Korean meaning (its ladder is 글자 수 → 로마자, only 글자 수 when the reading is up front: 문제 보기
+   * 한국어 + 발음, or a word without a meaning); 한자 읽기 asks with the kanji (all three; no 뜻 step without a meaning).
+   * A step keeps its number wherever it is offered (쓰기 starts at 「힌트 2」). o = { kanjiMode, readingShown, hasMeaning } */
+  const HINTS = { meaning: { n: 1, name: '뜻' }, count: { n: 2, name: '글자 수' }, romaji: { n: 3, name: '로마자' } };
+  function hintLadder(o) {
+    const p = o || {};
+    return ['meaning', 'count', 'romaji'].filter((s) => (s === 'meaning' ? !!(p.kanjiMode && p.hasMeaning) : s === 'romaji' ? !p.readingShown : true));
+  }
+  // The hint button's words for the step it will show: '힌트 2: 글자 수'.
+  const hintLabel = (step) => (HINTS[step] ? `힌트 ${HINTS[step].n}: ${HINTS[step].name}` : '');
+  // The highest step reached after `used` presses (its number; 0 = no hint) — what the run keeps with the answer.
+  const hintLevel = (ladder, used) => (ladder || []).slice(0, used).reduce((m, s) => Math.max(m, HINTS[s] ? HINTS[s].n : 0), 0);
+
+  /* 힌트 2 (글자 수): { n — the cells GridPad.setCountHint tints, text } for the form the learner most likely writes: the
+   * kana reading (every reading's length, the main reading first; hiragana and as written are as long) — 한자 읽기 '히라가나로
+   * 4글자'; 쓰기 '4글자', with the kanji form beside it when there is one ('가나로 4글자 · 한자로 쓰면 2글자'). 、。 take a cell
+   * each and are named. Counts come from KanaAlign.answers (spaces are not cells). */
+  function countHint(entry, o) {
+    const kanjiMode = !!(o && o.kanjiMode);
+    const list = KA().answers(entry, { kanjiMode });
+    const kana = list.filter((a) => a.form !== 'kanji');
+    const kanji = list.find((a) => a.form === 'kanji' && !a.kana);
+    const lens = uniq(kana.map((a) => a.chars.length));
+    const marks = ['、', '。'].filter((m) => kana.some((a) => a.chars.includes(m)));
+    const punct = marks.length ? ` (${marks.join('')} 포함)` : '';
+    const count = lens.map((x) => `${x}글자`).join(' 또는 ') + punct;
+    const text = kanjiMode ? `히라가나로 ${count}` : kanji ? `가나로 ${count} · 한자로 쓰면 ${kanji.chars.length}글자` : count;
+    return { n: lens[0] || 0, text };
   }
 
-  // 읽기 선택 option label: the cell count, plus the romaji of every reading it grades (nani / nan · 2칸) once the
-  // reading is on screen anyway (showRomaji) — never before: the options must not give the answer away.
-  function readingGroupLabel(g, showRomaji, sentence) {
-    if (!showRomaji) return `${g.count}칸`;
-    const T = TX();
-    let rom = [];
-    try { rom = uniq(g.readings.map((r) => T.toRomaji(r, { sentence: !!sentence })).filter(Boolean)); } catch (e) { rom = []; }
-    return rom.length ? `${rom.join(' / ')} · ${g.count}칸` : `${g.count}칸`;
-  }
+  /* ------------------------------------------------------------------ open-length writing results (SPEC-words M) */
 
-  // The 원고지 cells of an answer form ('hira' | 'text' | 'kanji'; 'kana' = 'text'), for one of its readings
-  // (default: the first). A kanji form without kanji falls back to the text.
-  function cellsFor(entry, form, reading) {
-    const T = TX();
-    if (form === 'kanji' && hasKanji(entry)) return T.cells(kanjiOf(entry));
-    const r = reading || entry.text;
-    return T.cells(form === 'hira' ? hiraganaOf(r) : r);
-  }
+  const CELL_BOX = { x: 0, y: 0, w: 100, h: 100 };
 
-  // Several readings graded on the same cells: the best entry grade (○ > △ > ✕ > nothing gradable), then more ○ cells,
-  // then fewer ✕ cells, then the earlier reading. candidates: [{ marks: ['o'|'t'|'x'|'-', ...] }] → index.
-  const GRADE_RANK = { o: 3, t: 2, x: 1 };
-  function bestReading(candidates) {
-    let best = -1, bestKey = null;
-    (candidates || []).forEach((c, i) => {
-      const m = (c && c.marks) || [];
-      const key = [GRADE_RANK[gradeOfCells(m)] || 0, m.filter((x) => x === 'o').length, -m.filter((x) => x === 'x').length];
-      if (!bestKey || key[0] > bestKey[0] || (key[0] === bestKey[0] && (key[1] > bestKey[1] || (key[1] === bestKey[1] && key[2] > bestKey[2])))) {
-        best = i; bestKey = key;
-      }
+  /* The result strip: KanaAlign.grade's steps as slots in answer order, each with the learner's ink for the detail view —
+   * match (the expected char, its ○ △ ✕ – mark), missing (the expected char: '빠짐'), extra (the cell's char as read, or
+   * null: '필요 없음'). written = the graded cells [{ index, strokes, box }] (GridPad.getWrittenCells). key: 'c' + grid
+   * index for a written cell, 'm' + answer position for a missing char.
+   * → [{ key, type, cell, ch, expected, written, mark, note, kind, result, strokes, box, neutral, error, pos? }] */
+  function alignSlots(res, written) {
+    const ink = new Map((written || []).map((c) => [c.index, c]));
+    return ((res && res.steps) || []).map((st) => {
+      const c = st.type !== 'missing' ? ink.get(st.cell) : null;
+      const base = {
+        type: st.type, cell: st.type === 'missing' ? null : st.cell, kind: st.kind || null, note: st.note || null,
+        result: st.result || null, strokes: c ? c.strokes : [], box: (c && c.box) || CELL_BOX, neutral: !!st.neutral, error: !!st.error,
+      };
+      if (st.type === 'match') return Object.assign(base, { key: 'c' + st.cell, ch: st.expected, expected: st.expected, written: st.written || null, mark: st.mark });
+      if (st.type === 'extra') return Object.assign(base, { key: 'c' + st.cell, ch: st.written || null, expected: null, written: st.written || null, mark: 'x' });
+      return Object.assign(base, { key: 'm' + st.pos, ch: st.expected, expected: st.expected, written: null, mark: 'x', pos: st.pos, after: st.after });
     });
-    return best;
   }
 
-  /* Handwriting in the other kana script (テ drawn in a て cell, or the reverse): the cell stays ✕ — the cells hold one
-   * answer form, SPEC-words L — but the result says so and names the form that takes that script. A cell counts when it
-   * is ✕ and the recognizer read the drawing as the expected kana's twin. → { kata, hira } (cells drawn in that script) */
-  function scriptSlip(cells) {
-    let kata = 0, hira = 0;
-    for (const c of cells || []) {
-      const rec = c && c.mark === 'x' && c.result && c.result.recognized;
-      if (!rec || rec === c.ch || hiraganaOf(rec) !== hiraganaOf(c.ch)) continue;
-      if (hiraganaOf(rec) === rec) hira++; else kata++;
-    }
-    return { kata, hira };
+  // 모르겠어요: the answer's characters as slots to look at (no ink, no grade). answer = a KanaAlign answer ({ chars }).
+  function skipSlots(answer) {
+    return ((answer && answer.chars) || []).map((ch, k) => ({
+      key: 's' + k, type: 'skip', cell: null, ch, expected: ch, written: null, mark: 'x', note: null, kind: null,
+      result: null, strokes: [], box: CELL_BOX, neutral: false, error: false, pos: k,
+    }));
   }
-  const FORM_NAME = { hira: '히라가나', text: '표기대로', kanji: '한자 섞어' };
-  const FORM_RULE = { hira: '모두 히라가나로 써요', text: '적힌 그대로 써요 (가타카나는 가타카나, 히라가나는 히라가나)', kanji: '한자 표기 그대로 써요' };
-  // The note for scriptSlip: form = the form written in, offered = the forms the question offers. null = nothing to say.
-  function scriptSlipNote(slip, form, offered) {
-    const s = slip || {};
-    const have = (f) => (offered || []).includes(f);
-    const out = [];
-    for (const [script, n, to] of [['가타카나', s.kata, form === 'hira' && have('text') ? 'text' : null],
-      ['히라가나', s.hira, form === 'text' && have('hira') ? 'hira' : null]]) {
-      if (!n) continue;
-      out.push(`${script}로 쓴 칸이 ${n}개 있어요. 「${FORM_NAME[form] || FORM_NAME.hira}」 답안에서는 ${FORM_RULE[form] || FORM_RULE.hira}.`
-        + (to ? ` 「${FORM_NAME[to]}」 답안 형태를 고르면 ${script}로 쓸 수 있어요.` : ''));
-    }
-    return out.length ? out.join(' ') : null;
+
+  // Korean particle after a Japanese word, by its 한글 reading's last syllable (なん → なん으로, なに → なに로).
+  function josaKo(word, withFinal, noFinal) {
+    let ko = '';
+    try { ko = TX().toHangul(String(word == null ? '' : word)).trim(); } catch (e) { ko = ''; }
+    const code = ko ? ko.charCodeAt(ko.length - 1) - 0xac00 : -1;
+    const fin = code >= 0 && code < 11172 ? code % 28 : 0;
+    return String(word) + (fin && !(withFinal === '으로' && fin === 8) ? withFinal : noFinal);
   }
+
+  /* Which accepted spelling the writing was graded as — '히라가나로 썼어요' · '가타카나로 썼어요' / '표기대로 썼어요' · '한자 섞어
+   * 썼어요' · '다른 읽기 なん으로 썼어요'; null when the question has a single spelling (nothing to tell apart).
+   * best = KanaAlign result.best, list = the question's KanaAlign.answers. */
+  function formNote(best, list, res) {
+    // another word altogether, or the two forms mixed (学せい): it was not written in any one form — nothing to name
+    if (res && (res.issues || []).some((i) => i && (i.type === 'different' || i.type === 'mixed'))) return null;
+    if (!best || !list || list.length < 2) return null;
+    if (best.form === 'kanji') return best.kana === 'hira' ? '한자 섞어 썼어요 (가나는 히라가나로)' : '한자 섞어 썼어요';
+    if (best.reading > 0) return `다른 읽기 ${josaKo(best.text, '으로', '로')} 썼어요`;
+    if (best.form === 'text') return scriptOf(best.text) === 'kata' ? '가타카나로 썼어요' : '표기대로 썼어요';
+    return '히라가나로 썼어요';
+  }
+
+  /* The 정답 line of a written answer: the spelling it was graded as (or shown for 모르겠어요) first, then the other accepted
+   * spellings — without the kanji form's copy with hiragana kana (アメリカ人 → あめりか人), which only repeats the two
+   * forms beside it. The kanji form as written is shown with furigana over every reading, so nothing follows it.
+   * → { main, mainKanji, others: [text] } */
+  function answerTexts(best, list) {
+    const main = best ? best.text : '';
+    const key = best ? best.key : null;
+    const mainKanji = key === 'kanji';
+    const others = mainKanji ? [] : uniq((list || []).filter((a) => a.key !== key && a.text !== main && !(a.kana === 'hira')).map((a) => a.text));
+    return { main, mainKanji, others };
+  }
+
+  /* Per-character writing stats of a graded answer (KanaApp.recordWriting): the kana matched to a written cell, ○ △ ✕ — not
+   * extras (ー っ …), kanji or neutral cells, nothing for a missing or an extra cell, and nothing at all when the writing is
+   * another word altogether (its cells were not trying to be these kana), and not for swapped cells or a kanji written in a
+   * kana spelling (KanaAlign swap / mixed). → [{ ch, mark, result }] */
+  function recordableChars(res) {
+    if (!res || !Array.isArray(res.steps) || (res.issues || []).some((i) => i && i.type === 'different')) return [];
+    const D = KD();
+    // a cell written in another cell's place (swap) or holding the other form's character (mixed) was not an attempt at
+    // the char it is aligned to: no stats for it
+    return res.steps.filter((s) => s.type === 'match' && (s.mark === 'o' || s.mark === 't' || s.mark === 'x') && D.kana[s.expected] && !s.swap && !s.mixed)
+      .map((s) => ({ ch: s.expected, mark: s.mark, result: s.result || null }));
+  }
+
+  /* js/kanji-data.js could not be loaded (kanjiOk false: kanji were judged null) and the writing reads as the kanji form,
+   * with kanji cells left neutral: grading it would be a guess, so nothing is graded (SPEC-words §J notice). */
+  function kanjiDataMissing(res, kanjiOk) {
+    return !kanjiOk && !!res && !!res.best && res.best.form === 'kanji'
+      && (res.steps || []).some((s) => s.type === 'match' && s.neutral && s.kind === 'kanji');
+  }
+
 
   // Which judge a cell needs: 'kana' | 'extra' (KanaRecognizer, box mode) | 'kanji' (KanjiJudge) | 'other'.
   function cellTarget(ch) {
@@ -869,6 +905,13 @@
   function readingSample(entry) {
     const t = foldSearch(entry && entry.text);
     return READ_SAMPLES.find((s) => t.indexOf(s.kana) < 0) || READ_SAMPLES[0];
+  }
+  // The romaji typing example of the kana input's help (gakusei → がくせい): never a word the question's answer contains or
+  // is part of — in 쓰기 / 한자 읽기 typed, がくせい (学生) must not be printed under its own question. avoid = text | [text].
+  const TYPE_SAMPLES = [{ kana: 'がくせい', romaji: 'gakusei' }].concat(READ_SAMPLES);
+  function typingSample(avoid) {
+    const xs = (Array.isArray(avoid) ? avoid : [avoid]).map((t) => foldSearch(t)).filter(Boolean);
+    return TYPE_SAMPLES.find((s) => xs.every((t) => t.indexOf(s.kana) < 0 && s.kana.indexOf(t) < 0)) || TYPE_SAMPLES[TYPE_SAMPLES.length - 1];
   }
 
   // Korean copy with Japanese inside → [{ ja, text }]: kana / kanji runs (with ー 々 〆 ヶ ゛ ゜ 、 。) are marked so the
@@ -1048,16 +1091,17 @@
 
   const pure = {
     EXAMPLES, DEFAULT_PREFS, NO_TAG, normalizePrefs, statsOf, entrySummary, hasKanji, meaningsOf, displayMeaning,
-    foldSearch, searchText, filterEntries, tagsOf, gradeOfCells, overallMark, answerMarks, penHeadline, recentOf,
+    foldSearch, searchText, filterEntries, tagsOf, overallMark, answerMarks, penHeadline, recentOf,
     wrongRate, weightOf, endlessStatsFor, practicePool, questionCount, buildQueue, meaningChoices, checkTypedWrite,
     checkTypedReading, furigana, liveRomaji, toggleMark, toggleSmall, insertText, backspaceText, modifyBefore,
-    showsReading, cellsFor, cellTarget, scriptOf, summarize, retryIds, badCharKind, kanaFieldError, kanjiFieldError,
-    compactText, readingSample, splitJa, effectiveTag,
+    showsReading, cellTarget, scriptOf, summarize, retryIds, badCharKind, kanaFieldError, kanjiFieldError,
+    compactText, readingSample, typingSample, splitJa, effectiveTag,
     groupState, selectIds, deselectIds, toggleIds, idsOfTag, toggleTag, pruneSelection, tagSelection, tagChipText,
     selectionTagsLine, selectionPref, selectionFromPref,
-    FORMS, formPrefKey, readingsOf, hiraganaOf, answerForms, defaultForm, resolveForm, formReadings, readingGroups,
-    bestReading, furiganaAll, readingsLine, foldKana, romajiToKanaAll, presetStatus, importPresetWords, presetMessage, altsFieldParse,
-    scriptSlip, scriptSlipNote, readingGroupLabel,
+    FORMS, readingsOf, hiraganaOf, answerForms, defaultForm, resolveForm, formReadings,
+    furiganaAll, readingsLine, foldKana, romajiToKanaAll, presetStatus, importPresetWords, presetMessage, altsFieldParse,
+    HINTS, hintLadder, hintLabel, hintLevel, countHint, alignSlots, skipSlots, josaKo, formNote, answerTexts, recordableChars,
+    kanjiDataMissing,
   };
 
   if (isNode) return { _pure: pure, start() {} };
@@ -1676,6 +1720,7 @@
   function kanaInput(opts) {
     const o = opts || {};
     const T = TX();
+    const sample = typingSample(o.avoid);         // the help's example (o.avoid: the answer, in a question)
     let mode = ['ime', 'romaji', 'pad'].includes(o.mode) ? o.mode : 'ime';
     let script = o.script === 'kata' ? 'kata' : 'hira';
     let sel = { start: (o.value || '').length, end: (o.value || '').length };
@@ -1779,7 +1824,7 @@
       pad.hidden = mode !== 'pad';
       scriptBar.hidden = mode === 'ime';
       help.textContent = '';
-      add(help, rich(mode === 'romaji' ? '로마자로 치면 바로 가나로 바뀌어요: gakusei → がくせい, kko → っこ, nn → ん (다음 글자를 칠 때 바뀌어요), - → ー, . → 。'
+      add(help, rich(mode === 'romaji' ? `로마자로 치면 바로 가나로 바뀌어요: ${sample.romaji} → ${sample.kana}, kko → っこ, nn → ん (다음 글자를 칠 때 바뀌어요), - → ー, . → 。`
         : mode === 'pad' ? '키패드를 눌러 입력해요. ゛゜小는 바로 앞 글자를 바꿔요 (か → が, つ → っ).'
           : '기기의 일본어 키보드(IME)로 입력하거나 붙여 넣어요.'));
       if (mode === 'pad') buildPad();
@@ -2215,13 +2260,16 @@
         if (pr.withMeaning) opts.appendChild(meaningModeSeg());
       } else if (pr.mode === 'write') {
         opts.appendChild(segmented('wans', '답 입력', [{ value: 'pen', label: '손글씨 (원고지)' }, { value: 'type', label: '타자' }], pr.answerInput, (v) => set('answerInput', v)));
-        opts.appendChild(segmented('wview', '문제 보기', [{ value: 'auto', label: '자동' }, { value: 'ko', label: '한국어만' }, { value: 'ko+read', label: '한국어 + 발음' }], pr.promptView, (v) => set('promptView', v)));
-        opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, '자동: 단어는 발음도 함께, 문장은 한국어만 보여 줘요. 발음은 「힌트」로도 볼 수 있어요.'));
-        if (pr.answerInput === 'pen') formSegs('write', pool, opts);
-        else opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, rich('타자로 답할 때는 히라가나 · 가타카나 · 한자 섞인 표기 모두 정답이에요. 로마자로 치면 가나로 바뀌어요 (tesuto → てすと).')));
+        opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, rich(pr.answerInput === 'pen'
+          ? '히라가나 · 가타카나 · 한자 섞인 표기 모두 정답이에요. 원고지 칸은 답의 글자 수와 상관없이 계속 생겨요 — 다 쓰면 「채점」을 누르세요.'
+          : '히라가나 · 가타카나 · 한자 섞인 표기 모두 정답이에요. 로마자로 치면 가나로 바뀌어요 (tesuto → てすと).')));
+        opts.appendChild(segmented('wview', '문제 보기', [{ value: 'ko', label: '한국어만' }, { value: 'ko+read', label: '한국어 + 발음' }], pr.promptView, (v) => set('promptView', v)));
+        opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, pr.promptView === 'ko+read'
+          ? '발음(로마자)을 처음부터 보여 줘요. 「힌트」로는 글자 수를 볼 수 있어요.'
+          : '「힌트」를 누를 때마다 하나씩 더 보여 줘요: 글자 수 → 발음(로마자).'));
       } else {
         opts.appendChild(segmented('wans', '읽기 답 입력', [{ value: 'pen', label: '손글씨 (원고지)' }, { value: 'type', label: '타자' }], pr.answerInput, (v) => set('answerInput', v)));
-        if (pr.answerInput === 'pen') formSegs('kanji', pool, opts);
+        opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, '「힌트」를 누를 때마다 하나씩 더 보여 줘요: 뜻 → 글자 수 → 발음(로마자). 뜻 힌트를 보면 뜻 맞히기는 건너뛰어요.'));
         opts.appendChild(meaningModeSeg());
       }
       opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, '손글씨 채점의 깐깐함과 펜 전용 모드는 「연습」 탭의 세부 설정을 따라요.'));
@@ -2242,30 +2290,6 @@
         focusEl(same.find((el) => fk.v == null || el.value === fk.v) || same[0]);
       }
     }
-    // 답안 형태 (SPEC-words L) for the words / sentences of the pool: 히라가나 (words' default) · 표기대로 (sentences')
-    // · 한자 섞어 (쓰기 only). 한자 읽기 shows it only when some reading has katakana (else both forms are the same).
-    function formSegs(mode, pool, opts) {
-      const kanjiMode = mode === 'kanji';
-      const types = ['word', 'sentence'].filter((t) => pool.some((e) => e.type === t));
-      let shown = 0;
-      for (const t of types) {
-        const list = pool.filter((e) => e.type === t);
-        const hasText = list.some((e) => answerForms(e, { kanjiMode }).some((f) => f.form === 'text'));
-        if (kanjiMode && !hasText) continue;
-        const key = formPrefKey(mode, t);
-        const opt = [{ value: 'hira', label: '히라가나' + (defaultForm({ type: t }) === 'hira' ? ' (기본)' : '') },
-          { value: 'text', label: '표기대로' + (defaultForm({ type: t }) === 'text' ? ' (기본)' : '') }];
-        if (!kanjiMode) opt.push({ value: 'kanji', label: '한자 섞어', disabled: !list.some(hasKanji) });
-        const label = (kanjiMode ? '읽기 답안 형태' : '답안 형태') + (types.length > 1 || t === 'sentence' ? (t === 'word' ? ' — 단어' : ' — 문장') : '');
-        opts.appendChild(segmented('wform-' + t, label, opt, pr[key], (v) => set(key, v)));
-        shown++;
-      }
-      if (shown) {
-        opts.appendChild(h('p', { class: 'seg-hint ws-hint' }, rich(kanjiMode
-          ? '히라가나: 가타카나가 섞인 읽기도 히라가나로 써요 (アメリカじん → あめりかじん). 표기대로: 가타카나는 가타카나로 써요.'
-          : '히라가나: 가타카나 단어도 히라가나로 써요 (テスト → てすと). 표기대로: 가타카나는 가타카나로. 한자 섞어: 한자 표기가 있을 때만 (없으면 기본 형태로) 써요. 문제마다 바꿀 수도 있어요.')));
-      }
-    }
     function meaningModeSeg() {
       return segmented('wmean', '뜻 맞히기 방식', [{ value: 'type', label: '직접 입력' }, { value: 'choice', label: '4지선다' }], pr.meaningMode, (v) => set('meaningMode', v));
     }
@@ -2274,7 +2298,7 @@
 
   /* =================================================================== practice run */
 
-  /* S.run = { mode, prefs (answer forms switched during the run update it), active, endless: null | { run, pool },
+  /* S.run = { mode, prefs (the 원고지 view chosen during the run updates it), active, endless: null | { run, pool },
    *           questions: [{ id, retry }], index, answers, cur, entries: Map id → entry snapshot, pool: [entry] (4지선다) } */
   function startRun(pool, pr, opts) {
     const o = opts || {};
@@ -2294,8 +2318,8 @@
     }
     if (!run.questions.length) { toast('연습할 단어가 없어요.'); return; }
     S.run = run;
-    // prefetch js/kanji-data.js (≈1.4 MB) only where kanji strokes are drawn: 쓰기 by hand, which can switch to
-    // 한자 섞어 쓰기 on any word with a kanji form (단어 읽기 / 한자 읽기 / 타자 never judge kanji cells)
+    // prefetch js/kanji-data.js (≈1.4 MB) only where kanji strokes are judged: 쓰기 by hand, where any word with a
+    // kanji form may be written in kanji (단어 읽기 / 한자 읽기 / 타자 never judge kanji cells)
     if (pr.mode === 'write' && pr.answerInput !== 'type' && pool.some(hasKanji)) ensureKanji();
     go('practice');
   }
@@ -2360,9 +2384,11 @@
     const { reading, mark } = answerMarks(c.readingMark, c.neutral, meaningOk, partial);
     addAnswer(run, {
       id: c.entry.id, entry: c.entry, mode: run.mode, mark, reading, meaning: c.meaningAsked ? (partial ? null : meaningOk) : undefined,
-      meaningInput: c.meaningInput || '', overridden: !!c.overridden, cheat: !!c.cheat, hint: c.hint > 0 && c.hintCounts, skipped: !!c.skipped,
-      typed: c.typed || null, check: c.check || null, cells: c.cells || null, form: c.form || null, partial: !!partial, neutral: !!c.neutral,
-      answerText: c.answerText || null, converted: c.converted || null,
+      meaningInput: c.meaningInput || '', overridden: !!c.overridden, cheat: !!c.cheat, skipped: !!c.skipped,
+      // hint: the highest hint step reached (1 뜻 · 2 글자 수 · 3 로마자; 0 none); meaningHint: 한자 읽기's 뜻 step skipped
+      hint: c.hintCounts ? c.hintLevel || 1 : 0, meaningHint: !!c.meaningHint,
+      typed: c.typed || null, check: c.check || null, slots: c.slots || null, issues: c.issues || null, formNote: c.formNote || null,
+      form: c.form || null, partial: !!partial, neutral: !!c.neutral, answerText: c.answerText || null, converted: c.converted || null,
     });
   }
 
@@ -2465,8 +2491,8 @@
     const q = run.questions[run.index];
     const entry = run.entries.get(q.id);
     run.cur = {
-      entry, retry: q.retry, cheat: false, hint: 0, hintCounts: false, graded: false, readingDone: false, readingMark: null,
-      meaningAsked: false, final: false, practice: false, form: null,
+      entry, retry: q.retry, cheat: false, hint: 0, hintLevel: 0, hintCounts: false, meaningHint: false, graded: false, readingDone: false,
+      readingMark: null, meaningAsked: false, final: false, practice: false, form: null,
     };
     body.textContent = '';
     if (run.updateBar) run.updateBar();
@@ -2772,101 +2798,72 @@
 
   /* ------------------------------------------------------------------ 쓰기 / 한자 읽기 */
 
-  const FORM_LABEL = { hira: '히라가나', text: '표기대로', kanji: '한자 섞어' };
-
   function questionWrite(ctx) {
     const { run, body, entry, cur } = ctx;
     const pr = run.prefs;
-    const T = TX();
     const kanjiMode = run.mode === 'kanji';
     const typed = pr.answerInput === 'type';
     const tag = cheatTag();
     const htag = hintTag();
-    // 답안 형태 (SPEC-words L) and 읽기 선택 (K): the cells hold one reading of one form
-    const fopt = { kanjiMode };
-    const forms = answerForms(entry, fopt);
-    const prefKey = formPrefKey(run.mode, entry.type);
-    cur.form = resolveForm(entry, pr[prefKey], fopt);
-    cur.group = 0;
-    const groupsOf = (form) => readingGroups(formReadings(entry, form, fopt));
-    const curGroup = () => { const g = groupsOf(cur.form); return g[cur.group] || g[0]; };
-    const curReading = () => curGroup().readings[0];
-    const curCells = () => T.cells(curReading());
-    ctx.chartText = () => (cur.form === 'kanji' ? formReadings(entry, 'hira', fopt)[0] : curReading());
+    // every accepted spelling (SPEC-words M): hiragana, as written, the kanji form (쓰기), for every reading — handwriting
+    // is graded against whichever of them the cells match, so there is nothing to pick before writing
+    const accepted = KA().answers(entry, { kanjiMode });
+    // the spelling shown after 모르겠어요 and traced in 다시 써보기: the reading as written (한자 읽기: in hiragana)
+    const model = accepted.find((a) => a.key === (kanjiMode ? 'hira:0' : 'text:0')) || accepted.find((a) => a.key === 'hira:0') || accepted[0];
+    ctx.chartText = () => entry.text;
     const meanings = meaningsOf(entry.meaning);
-    // 문제 보기: the reading up front (한국어 + 발음, 자동 for words, or no meaning to show)
-    const showRead = !kanjiMode && (showsReading(pr.promptView, entry) || !meanings[0]);
-    // 힌트 steps: romaji (when the reading is hidden), then 보고 쓰기 (faint model glyphs; pen only)
-    const hintSteps = [];
-    if (!kanjiMode && !showRead) hintSteps.push('romaji');
-    if (!typed) hintSteps.push('guide');
-    let gp = null, ki = null;
+    // 문제 보기 한국어 + 발음, or a word without a meaning (nothing else to ask with): the reading up front
+    const showRead = !kanjiMode && (showsReading(pr.promptView) || !meanings[0]);
+    // 힌트: 1 뜻 (한자 읽기) → 2 글자 수 → 3 로마자 (unless the reading is up front)
+    const ladder = hintLadder({ kanjiMode, readingShown: showRead, hasMeaning: !!displayMeaning(entry) });
+    let gp = null, ki = null, busy = false;
 
-    // ---- prompt card: compact, so the 원고지 and its tools stay on the first screen —
-    //   a small line (what to write · N칸 · 단어/문장 · tags), the question (뜻 + 발음, or the kanji), one row of
-    //   controls (답안 형태 / 읽기 선택; 힌트 too when typing), and with a pen 채점 · 모르겠어요 · 힌트 · 컨닝 at the
-    //   card's foot (actRow below; beside the question on a wide card)
+    // ---- prompt card: compact, so the 원고지 and its tools stay on the first screen — a small line (what to write ·
+    //   단어/문장 · tags), the question (뜻 + 발음, or the kanji), the hints seen so far (one short line each) and, with a
+    //   pen, 채점 · 모르겠어요 · 힌트 · 컨닝 at the card's foot (actRow below; beside the question on a wide card). Nothing
+    //   on it tells the answer's length (no 'N칸'): only 힌트 2 does.
     const prompt = h('div', { class: 'card wp-prompt' + (kanjiMode ? ' is-kanji' : '') });
     const readLine = h('p', { class: 'wp-say', hidden: true });
-    // the hint button names what it shows: '힌트' plus '(보고 쓰기)' / '(발음 보기)'. With a pen it is one of the help
-    // buttons in the act row (모르겠어요 · 힌트 · 컨닝), shown as its icon where the row is narrow (css .act-text; the
-    // words stay its accessible name and title); the part in brackets only where there is room (css .wp-hint-what).
-    const hintMain = h('span', null, '힌트');
-    const hintWhat = h('span', { class: 'wp-hint-what' });
-    const hintBtn = h('button', { type: 'button', class: 'btn btn-sm wp-hint', on: { click: () => useHint() } }, icon('bulb'), h('span', { class: 'act-text' }, hintMain, hintWhat));
-    function setHintLabel(main, what) {
-      hintMain.textContent = main;
-      hintWhat.textContent = what ? ' (' + what + ')' : '';
-      hintBtn.title = main + (what ? ' (' + what + ')' : '');
-    }
-    const hintWhatOf = (st) => (st === 'romaji' ? '발음 보기' : '보고 쓰기');
-    setHintLabel('힌트', hintSteps.length ? hintWhatOf(hintSteps[0]) : '');
-    const formBox = h('div', { class: 'wp-form' });
-    const countNote = h('span', { class: 'wp-count' });
+    // the hint button names the step it shows next ('힌트 2: 글자 수'); in the act row (pen) it is its icon plus the step's
+    // number where the row is narrow (css .act-text, .wp-hint-n) — the words stay its accessible name and title
+    const hintNum = h('span', { class: 'wp-hint-n', 'aria-hidden': 'true' });
+    const hintText = h('span', { class: 'act-text' });
+    const hintBtn = h('button', { type: 'button', class: 'btn btn-sm wp-hint', on: { click: () => useHint() } }, icon('bulb'), hintNum, hintText);
+    const hintsBox = h('div', { class: 'wp-hints', role: 'group', 'aria-label': '본 힌트', 'aria-live': 'polite' });
     const promptLabel = h('p', { class: 'prompt-label' });
-    const ctlRow = h('div', { class: 'wp-ctl' }, formBox, hintSteps.length && typed ? hintBtn : null);
-    // the question's parts; the act row (pen) is its sibling — beside it on a wide card, under it on a phone
     const pmain = h('div', { class: 'prompt-main wp-prompt-main' });
     prompt.appendChild(pmain);
-    pmain.appendChild(h('div', { class: 'prompt-top wp-meta' }, promptLabel, countNote, typeBadge(entry.type),
+    pmain.appendChild(h('div', { class: 'prompt-top wp-meta' }, promptLabel, typeBadge(entry.type),
       h('span', { class: 'prompt-tags' }, retryTag(cur.retry), htag, tag)));
+    let subEl = null;
     if (kanjiMode) {
-      const then = displayMeaning(entry) ? ' 그다음 뜻도 물어봐요.' : '';     // no 뜻 step without a meaning
       const kn = Array.from(entry.kanji).length;
-      const sub = typed ? '읽기를 히라가나·로마자·한글 중 편한 것으로 입력하세요.' + then : then.trim();
+      subEl = h('p', { class: 'wp-sub' });
       pmain.appendChild(h('div', { class: 'wp-q wp-kanji-box' },
-        jp(entry.kanji, 'wp-kanji' + (kn > 8 ? ' is-xlong' : kn > 4 ? ' is-long' : '')),
-        sub ? h('p', { class: 'wp-sub' }, sub) : null));
+        jp(entry.kanji, 'wp-kanji' + (kn > 8 ? ' is-xlong' : kn > 4 ? ' is-long' : '')), subEl));
+      updateSub();
     } else {
       pmain.appendChild(h('div', { class: 'wp-q' },
         h('p', { class: 'wp-meaning' + (meanings[0] && meanings[0].length > 12 ? ' is-long' : '') }, meanings[0] || h('span', { class: 'wp-nomean' }, '(뜻이 없는 단어예요 — 발음을 보고 쓰세요)')),
         meanings.length > 1 ? h('p', { class: 'wp-meaning-alt' }, '또는 ' + meanings.slice(1).join(', ')) : null,
         readLine));
     }
-    pmain.appendChild(ctlRow);
-    // what to write, in the current form: 히라가나로 / 표기대로 (가타카나는 가타카나로) / 한자 섞어서
-    function updatePromptLabel() {
-      promptLabel.textContent = '';
-      // one span: .prompt-label is a flex box, and loose text nodes would become separate items
-      // (the parenthetical drops on a narrow card — css .wp-label-more; the 답안 형태 choice names the form anyway)
-      const kataNote = () => h('span', { class: 'wp-label-more' }, ' (가타카나는 가타카나로)');
-      if (kanjiMode) {
-        promptLabel.appendChild(typed ? h('span', null, '읽기를 쓰세요')
-          : cur.form === 'hira' ? h('span', null, '읽기를 ', h('b', null, '히라가나'), '로 쓰세요')
-            : h('span', null, '읽기를 ', h('b', null, '표기대로'), ' 쓰세요', kataNote()));
-        return;
-      }
-      if (typed) { promptLabel.appendChild(document.createTextNode('일본어로 쓰세요')); return; }
-      promptLabel.appendChild(cur.form === 'hira' ? h('span', null, '일본어를 ', h('b', null, '히라가나'), '로 쓰세요')
-        : cur.form === 'kanji' ? h('span', null, h('b', null, '한자'), '를 섞어서 쓰세요')
-          : h('span', null, '일본어로 쓰세요', forms.some((f) => f.form === 'text') ? kataNote() : null));
-    }
-    // '3칸' after the instruction on the card's top line (css .wp-count puts the ' · ' before it)
-    const updateCount = () => { countNote.textContent = typed ? '' : `${curCells().filter((c) => c.kind === 'write').length}칸`; };
-    updateCount();
-    updatePromptLabel();
+    pmain.appendChild(hintsBox);
+    if (typed && ladder.length) pmain.appendChild(h('div', { class: 'wp-ctl' }, hintBtn));
+    // what to write — never how much: '일본어로 쓰세요 · 히라가나·가타카나·한자 모두 돼요' / '읽기를 히라가나로 쓰세요'
+    // (one span: .prompt-label is a flex box; the part after '·' drops on a narrow card — css .wp-label-more)
+    if (kanjiMode) promptLabel.appendChild(typed ? h('span', null, '읽기를 쓰세요') : h('span', null, '읽기를 ', h('b', null, '히라가나'), '로 쓰세요'));
+    else promptLabel.appendChild(h('span', null, '일본어로 쓰세요', typed ? null : h('span', { class: 'wp-label-more' }, ' · 히라가나·가타카나·한자 모두 돼요')));
     if (showRead) showReading();
 
+    // 한자 읽기: the instruction beside the kanji (typed: how to type it; the 뜻 step that follows, or that it is skipped)
+    function updateSub() {
+      if (!subEl) return;
+      const then = !displayMeaning(entry) ? '' : cur.meaningHint ? ' 뜻 힌트를 봐서 뜻 맞히기는 건너뛰어요.' : ' 그다음 뜻도 물어봐요.';
+      const sub = (typed ? '읽기를 히라가나·로마자·한글 중 편한 것으로 입력하세요.' + then : then).trim();
+      subEl.textContent = sub;
+      subEl.hidden = !sub;
+    }
     function showReading() {
       const r = readingOf(entry);
       readLine.hidden = false;
@@ -2874,21 +2871,42 @@
       readLine.appendChild(h('span', { class: 'wp-say-romaji', lang: 'en' }, r.romaji));
       readLine.appendChild(h('span', { class: 'wp-say-ko' }, r.hangul));
     }
-    const readingShown = () => !readLine.hidden;
-
-    function useHint() {
-      if (cur.graded || busy || cur.hint >= hintSteps.length) return;
-      const step = hintSteps[cur.hint++];
-      if (step === 'romaji') { showReading(); renderForm(); }
-      if (step === 'guide' && gp) gp.setGuideText(guideText());
-      cur.hintCounts = true;
-      htag.hidden = false;
-      if (cur.hint >= hintSteps.length) { hintBtn.disabled = true; setHintLabel('힌트를 다 봤어요', ''); }
-      else setHintLabel('힌트 더 보기', hintWhatOf(hintSteps[cur.hint]));
-      toast(step === 'guide' ? '칸에 흐리게 보이는 글자를 따라 써 보세요. 힌트를 본 문제로 기록돼요.' : '발음을 보여 드려요. 힌트를 본 문제로 기록돼요.');
+    function updateHintBtn() {
+      const next = ladder[cur.hint];
+      const label = next ? hintLabel(next) : '힌트를 다 봤어요';
+      hintText.textContent = label;
+      hintNum.textContent = next ? String(HINTS[next].n) : '';
+      hintBtn.title = label;
+      hintBtn.disabled = !next || busy;
     }
-    const guideOn = () => hintSteps.slice(0, cur.hint).includes('guide');
-    const guideText = () => curCells().map((c) => c.ch).join('');
+    const HINT_TAG = { meaning: '뜻', count: '글자 수', romaji: '발음' };
+    function revealHint(step) {
+      let content = null;
+      if (step === 'meaning') content = h('span', { class: 'wp-hint-mean' }, meanings.join(', ') || entry.meaning);
+      else if (step === 'count') {
+        const c = countHint(entry, { kanjiMode });
+        content = h('span', null, rich(c.text));
+        if (gp && c.n) gp.setCountHint(c.n);       // the first n cells tinted (the run grows to n + 1)
+      } else {
+        const r = readingOf(entry);
+        content = [h('span', { class: 'wp-say-romaji', lang: 'en' }, r.romaji), ' ', h('span', { class: 'wp-say-ko' }, r.hangul)];
+      }
+      hintsBox.appendChild(h('p', { class: 'wp-hint-line', 'data-step': step }, h('span', { class: 'wp-k' }, HINT_TAG[step]), content));
+    }
+    function useHint() {
+      if (cur.graded || busy || cur.hint >= ladder.length) return;
+      const step = ladder[cur.hint++];
+      cur.hintCounts = true;
+      cur.hintLevel = hintLevel(ladder, cur.hint);
+      if (step === 'meaning') { cur.meaningHint = true; updateSub(); }
+      revealHint(step);
+      htag.hidden = false;
+      htag.firstChild.textContent = '힌트 ' + cur.hintLevel;
+      updateHintBtn();
+      toast(step === 'meaning' ? '뜻을 보여 드려요. 힌트를 본 문제로 기록되고, 뜻 맞히기는 건너뛰어요.'
+        : step === 'count' ? (typed ? '글자 수를 보여 드려요. 힌트를 본 문제로 기록돼요.' : '글자 수만큼 칸에 색을 칠했어요. 힌트를 본 문제로 기록돼요.')
+          : '발음을 보여 드려요. 힌트를 본 문제로 기록돼요.');
+    }
 
     // ---- answer area
     const pad = h('div', { class: 'wp-pad' });
@@ -2905,14 +2923,14 @@
     const practiceNote = h('p', { class: 'practice-note', hidden: true }, '연습 중이에요 — 다시 채점해도 이 문제의 기록은 바뀌지 않아요.');
     const counter = h('span', { class: 'stroke-count', 'aria-live': 'polite' });
     const tools = h('div', { class: 'pad-tools wp-tools pad-tools-top' });
-    let busy = false;
+    updateHintBtn();
 
     // With a pen, 채점 / 모르겠어요 / 힌트 / 컨닝 sit at the foot of the prompt card and the tools (되돌리기 · 칸 지우기 · 모두
     // 지우기) right above the 원고지 — with a clear band before its first row (css .pad-tools-top) — so they are on
-    // screen without scrolling however many rows the 원고지 has. The result panel is tall (per-cell strip and detail),
-    // so the 뜻 step and 다음 문제 come right under the 원고지, above it: they stay on screen while the result comes up
-    // below them (reveal). Typed: the buttons follow the input, and the short result card comes first, as in 단어 읽기.
-    const actRow = typed ? null : h('div', { class: 'act-row' }, gradeBtn, skipBtn, hintSteps.length ? hintBtn : null, cheatBtn);
+    // screen without scrolling however many rows the 원고지 grows to. The result panel is tall (alignment strip and
+    // detail), so the 뜻 step and 다음 문제 come right under the 원고지, above it: they stay on screen while the result comes
+    // up below them (reveal). Typed: the buttons follow the input, and the short result card comes first, as in 단어 읽기.
+    const actRow = typed ? null : h('div', { class: 'act-row' }, gradeBtn, skipBtn, ladder.length ? hintBtn : null, cheatBtn);
     if (actRow) prompt.appendChild(actRow);
     else tools.classList.remove('pad-tools-top');
     body.appendChild(h('div', { class: 'wp-layout' },
@@ -2924,78 +2942,16 @@
         : h('div', { class: 'wp-answer' }, practiceNote, tools, pad),
       typed ? [resultBox, meaningBox, nextWrap] : [meaningBox, nextWrap, resultBox]));
 
-    // ---- 답안 형태 (히라가나 / 표기대로 / 한자 섞어) and 읽기 선택 (readings of another length: 四 よん / し)
-    // (no glyph from the entry on the options: what is to be written would be shown before it is written; the
-    // readings are named by their cell count, with their romaji only once the reading is on screen anyway)
-    const groupLabel = (g) => readingGroupLabel(g, readingShown(), entry.type === 'sentence');
-    // refocus: the group (data-k) whose checked option gets the keyboard focus back after the rebuild (a toggle that
-    // went through the in-page confirm, or the rebuild of a control that had the focus)
-    function renderForm(refocus) {
-      const a = document.activeElement;
-      const keep = refocus || (a && formBox.contains(a) ? a.getAttribute('data-k') : null);
-      formBox.textContent = '';
-      if (typed) return;
-      if (keep) setTimeout(() => {
-        const el = formBox.querySelector('input[data-k="' + keep + '"]:checked') || formBox.querySelector('input[data-k="' + keep + '"]');
-        if (el && !el.disabled && !document.documentElement.classList.contains('modal-open')) focusEl(el);
-      }, 0);
-      if (forms.length > 1) {
-        formBox.appendChild(segmented('wpform', '답안 형태', forms.map((f) => ({ value: f.form, label: FORM_LABEL[f.form], disabled: busy })),
-          cur.form, (v) => switchForm(v), 'wp-form-seg'));
-      }
-      const groups = groupsOf(cur.form);
-      if (groups.length > 1) {
-        formBox.appendChild(segmented('wpread', '읽기 선택', groups.map((g, i) => ({ value: i, label: groupLabel(g), aria: `${i + 1}번째 읽기 — ${groupLabel(g)}`, disabled: busy })),
-          cur.group, (v) => switchGroup(Number(v)), 'wp-form-seg wp-read-seg'));
-        formBox.appendChild(h('p', { class: 'seg-hint wp-read-hint' }, '읽는 법이 여러 가지라 칸 수가 달라요. 쓰려는 읽기의 칸 수를 고르세요.'));
-      }
-    }
-    function switchForm(v) {
-      changeCells('wpform', () => {
-        if (v === 'kanji' || cur.form === 'kanji') cur.group = 0;      // hiragana / as written: same cells, same 읽기 선택
-        cur.form = v;
-        // remembered (SPEC-words L): this practice and the next ones
-        pr[prefKey] = v;
-        savePrefs(Object.assign(prefs(), { [prefKey]: v }));
-      }, '답안 형태를 바꿀까요?');
-    }
-    function switchGroup(i) { changeCells('wpread', () => { cur.group = i; }, '읽기를 바꿀까요?'); }
-    function changeCells(key, mutate, title) {
-      if (cur.graded || busy) { renderForm(); return; }
-      const fromToggle = !!(document.activeElement && formBox.contains(document.activeElement));
-      const apply = () => {
-        if (cur.graded || busy) { renderForm(); return; }
-        mutate();
-        resultBox.textContent = '';        // e.g. the 한자 데이터 notice
-        buildPad();
-        renderForm(fromToggle ? key : null);
-        updateCount();
-        updatePromptLabel();
-        if (cur.form === 'kanji') {
-          ensureKanji().then((ok) => {
-            if (ok) { if (gp) gp.redraw(); return; }
-            if (cur.form === 'kanji' && !cur.graded && resultBox.isConnected) toast('한자 획 데이터를 불러오지 못했어요. 채점할 때 다시 불러와 볼게요.');
-          });
-        }
-      };
-      if (gp && gp.getStrokeCount() > 0) {
-        App.confirm({ title, body: '칸이 바뀌어서 지금까지 쓴 글씨가 지워져요.', ok: '바꾸고 지우기', cancel: '그대로 쓰기' })
-          .then((yes) => { if (yes) apply(); else renderForm(fromToggle ? key : null); });
-      } else apply();
-    }
-    renderForm();
-
-    // ---- pen: GridPad
+    // ---- pen: GridPad in open mode (SPEC-words M) — a run of cells that never tells how long the answer is: it starts at
+    //   one row on this width (6 cells at least) and keeps an empty cell after the last one written
     function buildPad() {
       if (gp) { gp.destroy(); gp = null; }
       pad.textContent = '';
       tools.textContent = '';
-      if (typed) return;
       const settings = App.getSettings();
       gp = root.GridPad.create(pad, {
-        cells: curCells(), penOnly: settings.penOnly,
-        label: kanjiMode ? '읽기를 쓰는 원고지 — 한 칸에 한 글자씩' : '원고지 — 한 칸에 한 글자씩 쓰세요',
-        guideText: guideOn() ? guideText() : null,
+        open: true, penOnly: settings.penOnly,
+        label: kanjiMode ? '읽기를 쓰는 원고지 — 한 칸에 한 글자씩, 다 쓰면 채점' : '원고지 — 한 칸에 한 글자씩, 다 쓰면 채점',
         // the view the learner last chose (모든 칸 / 한 칸씩) stays for the next questions and practices
         mode: pr.padView,
         // 한 칸씩: the big cell ends on the first screen however tall the question above it is
@@ -3008,7 +2964,7 @@
             if (pr.padView !== v) { pr.padView = v; savePrefs(Object.assign(prefs(), { padView: v })); }
           }
         },
-        onCellClick: (i) => showCell(i),
+        onCellClick: (i) => showCellAt(i),
       });
       tools.appendChild(h('button', { type: 'button', class: 'btn btn-sm tool-btn', title: '되돌리기 (Ctrl+Z)', on: { click: (e) => { if (gp && gp.isEnabled()) gp.undo(); if (e.detail > 0) pullFocus(); } } }, icon('undo'), h('span', { class: 'tool-text' }, '되돌리기')));
       tools.appendChild(h('button', { type: 'button', class: 'btn btn-sm tool-btn', title: '지금 칸 지우기', on: { click: (e) => { if (gp && gp.isEnabled() && gp.getFocus() >= 0) gp.clearCell(gp.getFocus()); if (e.detail > 0) pullFocus(); } } }, icon('clear'), h('span', { class: 'tool-text' }, '칸 지우기')));
@@ -3020,13 +2976,15 @@
       tools.appendChild(counter);
       updateCounter();
     }
+    // how many cells have ink — never out of how many ('3칸 썼어요')
     function updateCounter() {
       if (!gp) return;
+      let k = 0;
+      for (let i = 0; i < gp.cellCount; i++) if (gp.getCellStrokeCount(i)) k++;
       counter.textContent = '';
-      const cells = curCells();
-      const filled = cells.reduce((n, c, i) => n + (c.kind === 'write' && gp.getCellStrokeCount(i) ? 1 : 0), 0);
-      counter.appendChild(h('b', null, String(filled)));
-      counter.appendChild(document.createTextNode(` / ${cells.filter((c) => c.kind === 'write').length}칸`));
+      if (!k) return;
+      counter.appendChild(h('b', null, String(k)));
+      counter.appendChild(document.createTextNode('칸 썼어요'));
     }
     function pullFocus() {
       const main = ctx.main;
@@ -3042,6 +3000,7 @@
       const canKanji = !kanjiMode && hasKanji(entry);
       ki = kanaInput({
         id: 'wp-typed', mode: pr.typedMode || 'romaji', script: pr.typedScript || 'hira', compact: true, enterKeyHint: 'done',
+        avoid: [entry.text].concat(entry.alts || []),
         // never built from the entry: an empty box must not show the answer (its kanji form)
         placeholder: kanjiMode ? '히라가나·로마자·한글로 입력' : canKanji ? '가나(로마자) 또는 한자 섞인 표기로 입력' : '가나로 입력 (로마자로 쳐도 돼요)',
         onEnter: () => { if (!cur.graded) grade(); else if (run.keys && run.keys.enter) run.keys.enter(); },
@@ -3083,14 +3042,12 @@
       skipBtn.hidden = !on;
       cheatBtn.hidden = !on;
       hintBtn.hidden = !on;
-      formBox.hidden = !on;
       tools.hidden = !on;
     }
 
     // ---- grading
     // While 채점 waits (KanjiJudge.load() of a slow js/kanji-data.js), the pad and the question's other controls are
-    // off: the answer that went to 채점 is the one graded and recorded (no 모르겠어요 / form switch / 컨닝 / hint /
-    // new strokes in between).
+    // off: the answer that went to 채점 is the one graded and recorded (no 모르겠어요 / 컨닝 / hint / new strokes in between).
     function setBusy(on) {
       busy = on;
       cur.submitting = on;
@@ -3098,9 +3055,8 @@
       gradeBtn.firstChild.textContent = on ? '채점 중…' : '채점';
       skipBtn.disabled = on;
       cheatBtn.disabled = on;
-      hintBtn.disabled = on || cur.hint >= hintSteps.length;
+      updateHintBtn();
       Array.from(tools.querySelectorAll('button')).forEach((b) => { b.disabled = on; });
-      renderForm();
       if (gp) gp.setEnabled(!on);
     }
 
@@ -3109,77 +3065,91 @@
       if (cur.graded && !cur.practice) return;
       if (typed) { gradeTyped(); return; }
       if (!gp) return;
-      if (!gp.getStrokeCount()) { toast('칸 안에 먼저 써 주세요. 모르겠으면 「모르겠어요」를 누르세요.'); return; }
       const gp0 = gp;
-      // the strokes are read before anything is awaited: what went to 채점 is what is judged
-      const ink = curCells().map((c, i) => (c.kind === 'write' ? { strokes: gp0.getCellStrokes(i), box: gp0.getCellBox(i) } : null));
-      const readings = curGroup().readings;
+      // the ink is read before anything is awaited: what went to 채점 is what is judged (skipped / trailing empty cells
+      // are not part of the answer)
+      const written = gp0.getWrittenCells();
+      if (!written.length) { toast('칸 안에 먼저 써 주세요. 모르겠으면 「모르겠어요」를 누르세요.'); return; }
       setBusy(true);
-      const cands = [];
+      let res = null, kanjiOk = true;
+      const live = () => run.cur === cur && gp === gp0;
+      const align = () => KA().grade(written, entry, alignJudge(kanjiOk), { answers: accepted, kanjiMode });
       try {
-        // every reading that fills these cells (何 なに / なん): each cell judged against that reading's character
-        for (const r of readings) cands.push({ reading: r, cells: await judgeCells(T.cells(r), ink) });
+        // kanji are judged only when the answer has a kanji form (쓰기). js/kanji-data.js (prefetched at the start) may
+        // still be loading: a writing that is right in kana needs no kanji judge (a tie goes to the kana spelling), so it
+        // is graded at once; anything else waits for the data and is graded with it.
+        const kanjiForm = accepted.some((a) => a.form === 'kanji');
+        kanjiOk = !kanjiForm || (root.KANJI_DATA ? await ensureKanji() : false);
+        await nextPaint();              // 채점 중… on screen before the alignment runs (tens of ms for a sentence)
+        if (live()) res = align();
+        if (res && kanjiForm && !kanjiOk && !(res.grade === 'o' && res.best && res.best.form !== 'kanji')) {
+          kanjiOk = await ensureKanji();
+          if (kanjiOk && live()) res = align();
+        }
+      } catch (e) {
+        console.error(e);
+        res = null;
       } finally { setBusy(false); }
       // the question was left, or its pad replaced, while judging: this result belongs to nothing on screen
       if (!gp || gp !== gp0 || run.cur !== cur || (cur.graded && !cur.practice)) return;
-      if (cands.some((c) => c.cells.some((x) => x.unloaded))) { showUnloaded(); return; }
-      const best = cands[Math.max(0, bestReading(cands.map((c) => ({ marks: c.cells.map((x) => x.mark) }))))];
-      const cells = best.cells;
-      const g = gradeOfCells(cells.map((c) => c.mark));
-      gp.setMarks(cells.map((c) => ({ i: c.i, mark: c.mark })));
+      if (!res) { toast('채점하지 못했어요. 다시 눌러 주세요.'); return; }
+      if (kanjiDataMissing(res, kanjiOk)) { showUnloaded(); return; }
+      const slots = alignSlots(res, written);
+      const g = res.grade === '-' ? null : res.grade;
+      gp.setMarks(res.marks);
       gp.setEnabled(false);
       if (!cur.graded) {
         cur.graded = true;
         cur.readingDone = true;
-        cur.cells = cells;
-        cur.answerText = best.reading;
+        cur.slots = slots;
+        cur.issues = res.issues.map((i) => i.message);
+        cur.formNote = formNote(res.best, accepted, res);
+        cur.form = res.best ? res.best.form : null;
+        cur.answerText = res.best ? res.best.text : null;
         cur.readingMark = g || '-';
         cur.neutral = !g;            // nothing gradable: not recorded, '–' in the run (not ✕)
-        recordGrade(g, cells);
-      } else {
-        cur.practiceCells = cells;
-        cur.practiceText = best.reading;
+        recordGrade(res);
       }
       setAsking(false);
       practiceNote.hidden = true;
-      renderResult(cur.practice ? cur.practiceCells : cells, g, cur.practice ? cur.practiceText : cur.answerText);
+      renderResult(res, slots);
       afterReading();
     }
 
-    // js/kanji-data.js could not be loaded (offline, file missing, load timeout): the kanji cells cannot be judged,
-    // so nothing is graded or recorded. The learner can load it again, or switch to the hiragana form.
+    // js/kanji-data.js could not be loaded (offline, file missing, load timeout) and the writing reads as the kanji form:
+    // its kanji cannot be judged, so nothing is graded or recorded. The learner can load it again, or write in kana.
     function showUnloaded() {
       resultBox.textContent = '';
       resultBox.classList.remove('is-stale');
-      const toKanaOk = !cur.graded && forms.some((f) => f.form === 'kanji');
-      const note = h('p', { class: 'wr-note' }, toKanaOk ? '인터넷 연결을 확인하고 다시 불러오거나, 히라가나로 바꿔 써 주세요. ' : '인터넷 연결을 확인하고 다시 불러와 주세요. ',
+      const note = h('p', { class: 'wr-note' }, '인터넷 연결을 확인하고 다시 불러오거나, 지우고 가나로 써 주세요. ',
         cur.practice ? '연습 채점이라 기록은 그대로예요.' : '이 문제는 아직 채점하지도, 기록하지도 않았어요.');
       const retry = h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => {
         if (busy) return;
         note.textContent = '한자 획 데이터를 다시 불러오는 중이에요…';
-        grade();                     // judgeCells → ensureKanji() tries the load again
+        grade();                     // ensureKanji() tries the load again
       } } }, '다시 불러와서 채점');
-      const toKana = toKanaOk ? h('button', { type: 'button', class: 'btn', on: { click: () => switchForm('hira') } }, '히라가나로 쓰기') : null;
+      const toKana = h('button', { type: 'button', class: 'btn', on: { click: () => {
+        if (busy || !gp) return;
+        gp.clearAll();
+        resultBox.textContent = '';
+        revealBelow(actRow || practiceNote, [pad, gradeBtn], { instant: true });
+      } } }, '지우고 가나로 쓰기');
       resultBox.appendChild(h('div', { class: 'wr card wr-unloaded' },
         h('div', { class: 'wr-head' },
           h('span', { class: 'wr-na', 'aria-hidden': 'true' }, '–'),
           h('div', { class: 'wr-headtext' },
-            h('p', { class: 'wr-verdict wr--' }, '한자 획 데이터를 불러오지 못해서 한자 칸을 채점할 수 없어요.'),
+            h('p', { class: 'wr-verdict wr--' }, '한자 획 데이터를 불러오지 못해서 한자로 쓴 칸을 채점할 수 없어요.'),
             note)),
         h('div', { class: 'wr-acts' }, retry, toKana)));
       revealBelow(resultBox, resultBox.querySelector('.wr-acts'));
     }
 
-    function recordGrade(g, cells) {
+    function recordGrade(res) {
       const cheat = !!(cur.cheat || cur.hintCounts);
-      if (g) {
-        try {
-          if (kanjiMode) Store.words.recordResult(entry.id, { mode: 'kanji', mark: g, cheat });
-          else Store.words.recordResult(entry.id, { mode: 'write', mark: g, cheat });
-        } catch (e) { console.error(e); }
+      if (res.grade === 'o' || res.grade === 't' || res.grade === 'x') {
+        try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: res.grade, cheat }); } catch (e) { console.error(e); }
       }
-      for (const c of cells || []) {
-        if (c.empty || c.neutral || c.target !== 'kana') continue;
+      for (const c of recordableChars(res)) {
         try { App.recordWriting(c.ch, c.mark, { cheat, source: 'word', result: c.result }); } catch (e) { console.error(e); }
       }
     }
@@ -3220,44 +3190,54 @@
       afterReading();
     }
 
-    // 모르겠어요 — the same in every practice kind and answer path: the question is ✕ (with its 뜻 part when it has
-    // one), no per-character result is recorded, the whole answer is shown (every accepted reading and form), and
-    // with a pen 다시 써보기 traces it (보고 쓰기).
+    // 모르겠어요 — the same in every practice kind and answer path: the question is ✕ (with its 뜻 part when it has one
+    // and its 뜻 hint was not seen), no per-character result is recorded, the whole answer is shown (every accepted
+    // reading and form), and with a pen 다시 써보기 traces it (보고 쓰기).
     function skip() {
       if (cur.graded || busy) return;
       cur.graded = true;
       cur.readingDone = true;
       cur.skipped = true;
       cur.readingMark = 'x';
-      cur.answerText = typed ? null : curReading();
+      cur.answerText = typed ? null : model.text;
+      cur.form = typed ? null : model.form;
       try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: 'x', cheat: !!(cur.cheat || cur.hintCounts) }); } catch (e) { console.error(e); }
       if (gp) { gp.setEnabled(false); }
       if (ki) ki.setReadOnly(true);
       setAsking(false);
-      const cells = typed ? null : curCells().map((c, i) => (c.kind === 'write' ? { i, ch: c.ch, mark: 'x', skipped: true, strokes: gp ? gp.getCellStrokes(i) : [], box: { x: 0, y: 0, w: 100, h: 100 }, result: null, target: cellTarget(c.ch) } : null)).filter(Boolean);
-      cur.cells = cells;
+      cur.slots = typed ? null : skipSlots(model);
       resultBox.textContent = '';
       if (typed) resultBox.appendChild(typedResult(entry, cur, null, kanjiMode));
-      else renderResult(cells, 'x', cur.answerText);
+      else renderResult(null, cur.slots);
       if (kanjiMode) {
-        // 모르겠어요 = both parts ✕ — the 뜻 part only when the entry has a meaning to ask (as afterReading does)
-        if (displayMeaning(entry)) {
+        if (displayMeaning(entry) && !cur.meaningHint) {
           cur.meaningAsked = true;
           recordMeaning(run, cur, false, false);
           finalizeAnswer(run, cur, false);
-        } else finalizeAnswer(run, cur, null);
+        } else {
+          if (cur.meaningHint) cur.meaningAsked = true;      // 뜻 shown by the hint: not asked, not recorded
+          finalizeAnswer(run, cur, null);
+        }
         showNext();
         return;
       }
       afterReading();
     }
 
-    // After the reading / writing part: 한자 읽기 asks the meaning, everything else is done.
+    // After the reading / writing part: 한자 읽기 asks the meaning (unless its 뜻 hint showed it), everything else is done.
     function afterReading() {
       if (run.updateBar) run.updateBar();
       if (cur.practice) { showNext(); return; }
       if (kanjiMode && !cur.meaningAsked && displayMeaning(entry)) {
         meaningBox.textContent = '';
+        if (cur.meaningHint) {
+          // the 뜻 hint showed the meaning: 뜻 맞히기 is skipped — not recorded as right, shown as 힌트 in 결과
+          cur.meaningAsked = true;
+          meaningBox.appendChild(h('p', { class: 'wm-skipped' }, okChip(null), ' 뜻 힌트를 봐서 뜻 맞히기는 건너뛰었어요.'));
+          finalizeAnswer(run, cur, null);
+          showNext();
+          return;
+        }
         meaningBox.appendChild(meaningStep(ctx, {
           onAnswered: (ok, pending) => { if (!pending) finalizeAnswer(run, cur, ok); showNext(); },
           onOverride: () => { finalizeAnswer(run, cur, true); if (run.updateBar) run.updateBar(); },
@@ -3290,7 +3270,7 @@
       cur.practice = true;
       gp.clearAll();
       gp.setMarks(null);
-      if (cur.skipped) gp.setGuideText(guideText());   // 모르겠어요 → trace the answer (보고 쓰기)
+      if (cur.skipped) gp.setGuideText(model.text);   // 모르겠어요 → trace the answer (보고 쓰기; a space is a blank cell)
       gp.setEnabled(true);
       gradeBtn.hidden = false;
       tools.hidden = false;
@@ -3304,31 +3284,28 @@
       focusEl(gradeBtn);
     }
 
-    // ---- result panel (pen): entry grade, the answer, per-cell strip, tapped cell's detail
-    let detailBox = null, strip = null, shownCells = null;
-    function renderResult(cells, g, used) {
+    // ---- result panel (pen): the grade and what it was graded as, the answer, the alignment issues, the alignment strip
+    //   (the answer's characters lined up with the written cells: ○ △ ✕ –, 빠짐, 필요 없음) and the tapped slot's detail
+    let detailBox = null, strip = null, shownSlots = null;
+    function renderResult(res, slots) {
       resultBox.textContent = '';
       resultBox.classList.remove('is-stale');
-      shownCells = cells;
-      const mark = g || '-';
-      const empties = cells.filter((c) => c.empty).length;
-      const wrong = cells.filter((c) => c.mark === 'x' && !c.empty && !c.skipped).length;
-      // neutral cells: kanji that have no stroke data (loaded, but not in KANJI_DATA) vs. cells the judge failed on
-      const noData = cells.filter((c) => c.neutral && c.target === 'kanji' && !c.error).length;
-      const failed = cells.filter((c) => c.neutral && !(c.target === 'kanji' && !c.error)).length;
-      const headline = penHeadline({ skipped: cur.skipped, practice: cur.practice, g, kanjiMode, empties, wrong });
+      shownSlots = slots;
+      const g = res ? (res.grade === '-' ? null : res.grade) : 'x';
+      const c = res ? res.counts : {};
+      const different = !!res && res.issues.some((i) => i.type === 'different');
+      const mixed = !!res && res.issues.some((i) => i.type === 'mixed');
+      const headline = penHeadline({ skipped: cur.skipped, practice: cur.practice, g, kanjiMode, missing: c.missing, wrong: c.x, extra: c.extra, swapped: c.swapped, different, mixed });
       const r = readingOf(entry);
-      const several = readingsOf(entry).length > 1;
-      // テスト drawn in 히라가나 cells: still ✕ (the cells hold one form), but say so and name the form that takes it
-      const slip = cur.skipped && !cur.practice ? null : scriptSlipNote(scriptSlip(cells), cur.form, forms.map((f) => f.form));
-      strip = h('div', { class: 'wc-strip', role: 'group', 'aria-label': '칸별 결과 — 누르면 자세히' });
-      cells.forEach((c, k) => {
-        strip.appendChild(h('button', {
-          type: 'button', class: 'wc-cell wc-' + (c.mark === '-' ? 'na' : c.mark), 'data-i': c.i, 'aria-pressed': 'false',
-          'aria-label': `${k + 1}번째 칸 ${c.ch} — ${c.empty ? '빈칸' : c.neutral ? '채점 안 함' : MARK_LABEL[c.mark]}`,
-          on: { click: () => showCell(c.i) },
-        }, jp(c.ch, 'wc-ch'), h('span', { class: 'wc-mark', 'aria-hidden': 'true' }, c.empty ? '빈칸' : MARK_SYM[c.mark])));
-      });
+      const fnote = res ? formNote(res.best, accepted, res) : null;
+      // neutral cells: kanji that have no stroke data (loaded, but not in KANJI_DATA) vs. cells the judge failed on
+      const neutral = res ? res.steps.filter((s) => s.type === 'match' && s.neutral) : [];
+      const noData = neutral.filter((s) => s.kind === 'kanji' && !s.error).length;
+      const failed = neutral.length - noData;
+      // 'different': the headline says so and the 정답 line shows the answer (the one issue would only repeat them)
+      const issues = res && !different ? res.issues : [];
+      strip = h('div', { class: 'wc-strip wa-strip', role: 'group', 'aria-label': res ? '정답에 맞춰 본 칸 — 누르면 자세히' : '정답 — 누르면 획순' },
+        slots.map((s) => slotButton(s, () => showSlot(s))));
       detailBox = h('div', { class: 'wc-detail', 'aria-live': 'polite' });
       resultBox.appendChild(h('div', { class: 'wr card' },
         h('div', { class: 'wr-head' },
@@ -3336,37 +3313,124 @@
           h('div', { class: 'wr-headtext' },
             cur.practice ? h('p', { class: 'wres-practice' }, cur.neutral ? '연습 결과 · 이 문제는 채점할 칸이 없어서 기록되지 않았어요'
               : `연습 결과 · 기록된 점수는 그대로 (${MARK_SYM[cur.readingMark] || '–'})`) : null,
-            h('p', { class: 'wr-verdict wr-' + mark }, headline),
-            h('p', { class: 'wr-answer' }, h('span', { class: 'wp-k' }, several ? '정답 (모두 인정)' : '정답'), answerNodes(entry, cur.form, used, kanjiMode)),
+            h('p', { class: 'wr-verdict wr-' + (g || '-') }, headline),
+            fnote ? h('p', { class: 'wr-form' }, rich(fnote)) : null,
+            h('p', { class: 'wr-answer' }, h('span', { class: 'wp-k' }, accepted.length > 1 ? '정답 (모두 인정)' : '정답'), alignAnswerNodes(entry, res ? res.best : model, accepted)),
             h('p', { class: 'wr-read' }, h('span', { lang: 'en' }, r.romaji), ' · ', r.hangul, !kanjiMode && entry.meaning ? ' · ' + entry.meaning : ''),
-            // readings judged together (何 なに / なん): which one the drawing was graded as
-            used && !cur.skipped && curGroup().readings.length > 1 ? h('p', { class: 'wr-note' }, rich(`채점한 읽기: ${used}`)) : null,
-            slip ? h('p', { class: 'wr-note wr-slip' }, rich(slip)) : null,
             noData ? h('p', { class: 'wr-note' }, `획 데이터가 없는 한자 ${noData}칸은 채점하지 않았어요 (–).`) : null,
             failed ? h('p', { class: 'wr-note' }, `채점하지 못한 칸 ${failed}개는 채점에서 뺐어요 (–).`) : null,
             (cur.cheat || cur.hintCounts) && !cur.practice ? h('p', { class: 'fb-cheat' }, cur.cheat ? '컨닝한 문제로 기록돼요.' : '힌트를 본 문제로 기록돼요.') : null,
             entry.note && !kanjiMode ? h('p', { class: 'wr-note' }, h('span', { class: 'wp-k' }, '메모'), rich(entry.note)) : null)),
-        h('p', { class: 'wr-strip-label' }, '칸을 누르면 자세히 볼 수 있어요'),
+        issuesList(issues.map((i) => i.message)),
+        h('p', { class: 'wr-strip-label' }, res ? '정답에 맞춰 본 칸이에요 — 누르면 자세히 볼 수 있어요' : '글자를 누르면 바른 획순을 볼 수 있어요'),
         strip, detailBox));
-      // open the first cell worth a look
-      const first = cells.find((c) => c.mark === 'x' || c.mark === 't') || (cur.skipped && !cur.practice ? cells[0] : null);
-      if (first) showCell(first.i, true);
+      // open the first slot worth a look
+      const first = res ? slots.find((s) => s.type !== 'match' || s.mark === 'x' || s.mark === 't') : cur.skipped && !cur.practice ? slots[0] : null;
+      if (first) showSlot(first, true);
       // no scroll here: showNext / the 뜻 step bring the result into view under 다음 문제 (reveal)
     }
 
-    function showCell(i, quiet) {
-      if (!shownCells || !detailBox) return;
-      const c = shownCells.find((x) => x.i === i);
-      if (!c) return;
-      Array.from(strip.children).forEach((b) => b.setAttribute('aria-pressed', Number(b.dataset.i) === i ? 'true' : 'false'));
+    function showSlot(s, quiet) {
+      if (!shownSlots || !detailBox || !strip) return;
+      Array.from(strip.children).forEach((b) => b.setAttribute('aria-pressed', b.dataset.key === s.key ? 'true' : 'false'));
       detailBox.textContent = '';
-      const n = shownCells.indexOf(c) + 1;
-      detailBox.appendChild(h('p', { class: 'wc-detail-h' }, `${n}번째 칸 · `, jp(c.ch), c.target === 'kana' || c.target === 'extra' ? h('button', { type: 'button', class: 'btn btn-sm btn-quiet', on: { click: () => App.openDetail(c.ch) } }, jp(c.ch), ' 글자 자세히') : null));
-      detailBox.appendChild(App.ui.judgeDetail(c.result, c.strokes, {
-        ch: c.ch, box: c.box, mark: c.neutral ? undefined : c.mark, empty: c.empty, skipped: c.skipped, compact: true,
-      }));
+      detailBox.setAttribute('data-type', s.type);
+      add(detailBox, slotDetail(s));
       if (!quiet) detailBox.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'nearest' });
     }
+    // a graded cell of the 원고지 tapped: its slot (match or extra)
+    function showCellAt(i) {
+      const s = shownSlots && shownSlots.find((x) => x.cell === i);
+      if (s) showSlot(s);
+    }
+  }
+
+  // A frame to paint in (채점 중…) before a long synchronous step; a timer when frames are not coming (hidden tab).
+  function nextPaint() {
+    return new Promise((resolve) => {
+      let done = false;
+      const go = () => { if (!done) { done = true; setTimeout(resolve, 0); } };
+      try { root.requestAnimationFrame(go); } catch (e) { /* none */ }
+      setTimeout(go, 60);
+    });
+  }
+
+  /* The judge KanaAlign.grade calls for a (cell, expected char) pair: kana / extras by KanaRecognizer (box mode), kanji
+   * by KanjiJudge; null — a neutral cell, not graded — for a kanji without stroke data, or every kanji while
+   * js/kanji-data.js could not be loaded (kanjiOk false: the caller then checks kanjiDataMissing). */
+  function alignJudge(kanjiOk) {
+    const strictness = App.getSettings().strictness;
+    const KR = root.KanaRecognizer, KJ = root.KanjiJudge;
+    return (strokes, ch, box) => {
+      const t = cellTarget(ch);
+      if (t === 'kana' || t === 'extra') return KR.judge(strokes, ch, { box, strictness });
+      if (t === 'kanji' && kanjiOk && KJ && KJ.has(ch)) return KJ.judge(strokes, ch, { box, strictness });
+      return null;
+    };
+  }
+
+  // The 정답 line of a written answer: the spelling it was graded as (with furigana when it is the kanji form), then the
+  // other accepted spellings in brackets — がっこう · てすと (テスト) · なん (なに · 何).
+  function alignAnswerNodes(entry, best, list) {
+    const t = answerTexts(best, list);
+    const main = t.mainKanji ? wordFace(entry) : jp(t.main, 'wface');
+    return [main, t.others.length ? h('span', { class: 'wr-alt' }, ' (', t.others.map((x, i) => [i ? h('span', { class: 'wr-sep' }, ' · ') : null, jp(x)]), ')') : null];
+  }
+
+  // KanaAlign's messages ('촉음 っ이 빠졌어요 — がっこう', 'っ을 하나 더 썼어요' …), missing / extra first as it orders them.
+  function issuesList(messages) {
+    const list = (messages || []).filter(Boolean);
+    if (!list.length) return null;
+    return h('ul', { class: 'wr-issues' }, list.map((m) => h('li', null, rich(m))));
+  }
+
+  /* ------------------------------------------------------------------ alignment strip (pen result, 결과 list) */
+
+  const SLOT_TAG = { missing: '빠짐', extra: '필요 없음' };
+  function slotClass(s) {
+    return s.type === 'missing' ? 'wc-miss' : s.type === 'extra' ? 'wc-extra' : s.type === 'skip' ? 'wc-skip' : 'wc-' + (s.mark === '-' ? 'na' : s.mark);
+  }
+  function slotName(s) {
+    if (s.type === 'missing') return `빠진 글자 ${s.ch}`;
+    if (s.type === 'extra') return `${s.cell + 1}번째 칸${s.written ? ' ' + s.written : ''} — 필요 없는 칸`;
+    if (s.type === 'skip') return `${s.pos + 1}번째 글자 ${s.ch}`;
+    return `${s.cell + 1}번째 칸 ${s.ch} — ${s.neutral ? '채점 안 함' : MARK_LABEL[s.mark] || MARK_LABEL.x}`;
+  }
+  // A slot of the strip: the expected char with its mark, a missing char (dashed, 빠짐), or an extra cell (the ink as
+  // written, 필요 없음).
+  function slotButton(s, onClick) {
+    const face = s.type === 'extra'
+      ? h('span', { class: 'wc-ink', 'aria-hidden': 'true' }, s.strokes && s.strokes.length && root.StrokeView
+        ? root.StrokeView.userDrawing(s.strokes, { box: 100, numbers: false, arrows: false, label: '쓴 글자' }) : jp(s.written || '?', 'wc-ch'))
+      : jp(s.ch || '?', 'wc-ch');
+    return h('button', { type: 'button', class: 'wc-cell ' + slotClass(s), 'data-key': s.key, 'aria-pressed': 'false', 'aria-label': slotName(s), on: { click: onClick } },
+      face, s.type === 'skip' ? null : h('span', { class: 'wc-mark', 'aria-hidden': 'true' }, SLOT_TAG[s.type] || MARK_SYM[s.mark] || MARK_SYM.x));
+  }
+  // The detail of a slot: its heading ('3번째 칸 · こ', '빠진 글자 · っ'), KanaAlign's note on it, and the graded-drawing
+  // detail (KanaApp.ui.judgeDetail with the expected char); a missing char shows the right stroke order, an extra cell
+  // the ink as written.
+  function slotDetail(s) {
+    const look = s.type === 'extra' ? s.written : s.expected;
+    const tgt = look ? cellTarget(look) : 'other';
+    const head = s.type === 'missing' ? ['빠진 글자 · ', jp(s.ch)]
+      : s.type === 'extra' ? [`${s.cell + 1}번째 칸 · 필요 없는 칸`]
+        : s.type === 'skip' ? [`${s.pos + 1}번째 글자 · `, jp(s.ch)]
+          : [`${s.cell + 1}번째 칸 · `, jp(s.ch)];
+    const out = [h('p', { class: 'wc-detail-h' }, head, tgt === 'kana' || tgt === 'extra'
+      ? h('button', { type: 'button', class: 'btn btn-sm btn-quiet', on: { click: () => App.openDetail(look) } }, jp(look), ' 글자 자세히') : null)];
+    if (s.note) out.push(h('p', { class: 'wc-note' }, rich(s.note)));
+    if (s.type === 'match') {
+      out.push(App.ui.judgeDetail(s.result, s.strokes, { ch: s.expected, box: s.box, mark: s.neutral ? undefined : s.mark, compact: true }));
+    } else if (s.type === 'missing') {
+      out.push(App.ui.judgeDetail(null, [], { ch: s.expected, empty: true, compact: true, report: false }));
+    } else if (s.type === 'skip') {
+      out.push(App.ui.judgeDetail(null, [], { ch: s.expected, skipped: true, compact: true, report: false }));
+    } else if (s.strokes && s.strokes.length && root.StrokeView) {
+      out.push(h('div', { class: 'wres wres-x is-compact' }, h('div', { class: 'wres-compare' }, h('figure', { class: 'wres-mine' },
+        h('div', { class: 'wres-mine-svg' }, root.StrokeView.userDrawing(s.strokes, { box: 100, label: '이 칸에 쓴 글자와 쓴 순서' })),
+        h('figcaption', null, h('b', null, '이 칸에 쓴 글자'), s.written ? h('span', { class: 'legend' }, '읽힌 글자: ', jp(s.written)) : null)))));
+    }
+    return out;
   }
 
   /* The accepted answer in the form that was written, then the other forms in brackets: てすと (テスト) ·
@@ -3380,35 +3444,6 @@
     if (f.form === 'kanji') return [wordFace(entry)];        // the furigana already shows every reading
     const others = forms.filter((x) => x !== f);
     return [list(f), others.length ? h('span', { class: 'wr-alt' }, ' (', others.map((x, i) => [i ? ' · ' : null, list(x)]), ')') : null];
-  }
-
-  /* Judge the cells of one reading (KanaText.cells) against the ink of the pad (ink[i] = { strokes, box } of write
-   * cell i, read before anything was awaited). Kana / extras: KanaRecognizer (box mode); kanji: KanjiJudge (loaded on
-   * demand); no stroke data → neutral '-'; empty cell → ✕. Kanji cells while js/kanji-data.js could not be loaded →
-   * neutral with unloaded: true (the caller then grades nothing) — kept apart from kanji that really have no data. */
-  async function judgeCells(cells, ink) {
-    const strictness = App.getSettings().strictness;
-    const items = [];
-    cells.forEach((c, i) => {
-      if (c.kind !== 'write') return;
-      const k = (ink && ink[i]) || { strokes: [], box: { x: 0, y: 0, w: 100, h: 100 } };
-      items.push({ i, ch: c.ch, target: cellTarget(c.ch), strokes: k.strokes, box: k.box });
-    });
-    const kanjiOk = items.some((x) => x.target === 'kanji') ? await ensureKanji() : true;
-    const KR = root.KanaRecognizer, KJ = root.KanjiJudge;
-    return items.map((x) => {
-      const base = { i: x.i, ch: x.ch, target: x.target, strokes: x.strokes, box: x.box, result: null };
-      if (x.target === 'kanji' && !kanjiOk) return Object.assign(base, { mark: '-', neutral: true, unloaded: true });
-      if ((x.target === 'kanji' && !(KJ && KJ.has(x.ch))) || x.target === 'other') return Object.assign(base, { mark: '-', neutral: true });
-      if (!x.strokes.length) return Object.assign(base, { mark: 'x', empty: true });
-      try {
-        const result = x.target === 'kanji' ? KJ.judge(x.strokes, x.ch, { box: x.box, strictness }) : KR.judge(x.strokes, x.ch, { box: x.box, strictness });
-        return Object.assign(base, { result, mark: result.verdict === 'correct' ? 'o' : result.verdict === 'order' ? 't' : 'x' });
-      } catch (e) {
-        console.error(e);
-        return Object.assign(base, { mark: '-', neutral: true, error: true });
-      }
-    });
   }
 
   // Typed answer result (쓰기 / 한자 읽기 타자, or 모르겠어요 in 타자).
@@ -3495,9 +3530,12 @@
     const given = a.skipped ? h('span', { class: 'qi-given is-skip' }, '모르겠어요')
       : a.mode === 'read' ? (a.reading === 'o' ? h('span', { class: 'qi-given' }) : h('span', { class: 'qi-given is-input' }, srOnly('입력한 답 '), a.typed || ''))
         : a.typed != null ? h('span', { class: 'qi-given' + (a.reading === 'o' ? '' : ' is-input') }, rich(a.typed), a.converted ? [' → ', jp(a.converted)] : null)
-          : h('span', { class: 'qi-given wr-qi-cells' }, (a.cells || []).map((c) => h('span', { class: 'wr-qi-cell wc-' + (c.mark === '-' ? 'na' : c.mark) }, jp(c.ch), h('span', { class: 'sr-only' }, ' ' + (c.empty ? '빈칸' : MARK_LABEL[c.mark])))));
+          // the alignment strip in small: the answer's characters with their marks, missing ones dashed, extra cells struck
+          : h('span', { class: 'qi-given wr-qi-cells' }, (a.slots || []).map((sl) => h('span', { class: 'wr-qi-cell ' + slotClass(sl) },
+            jp(sl.ch || '?'), h('span', { class: 'sr-only' }, ' ' + (sl.type === 'missing' ? '빠짐' : sl.type === 'extra' ? '필요 없음' : sl.type === 'skip' ? '' : sl.neutral ? '채점 안 함' : MARK_LABEL[sl.mark] || '')))));
     const parts = a.meaning !== undefined
-      ? h('span', { class: 'wr-parts' }, h('span', { class: 'wr-part' }, a.mode === 'kanji' ? '읽기 ' : '발음 ', markChip(a.reading)), h('span', { class: 'wr-part' }, '뜻 ', okChip(a.meaning === true ? true : a.meaning === false ? false : null), a.overridden ? h('span', { class: 'wr-ovr' }, '(스스로 인정)') : null))
+      ? h('span', { class: 'wr-parts' }, h('span', { class: 'wr-part' }, a.mode === 'kanji' ? '읽기 ' : '발음 ', markChip(a.reading)), h('span', { class: 'wr-part' }, '뜻 ', okChip(a.meaning === true ? true : a.meaning === false ? false : null),
+        a.overridden ? h('span', { class: 'wr-ovr' }, '(스스로 인정)') : a.meaningHint ? h('span', { class: 'wr-ovr' }, '(힌트로 봄)') : null))
       : null;
     const btn = h('button', { type: 'button', class: 'qitem wr-qitem', 'aria-expanded': 'false' },
       h('span', { class: 'qi-n' }, i + 1),
@@ -3505,7 +3543,7 @@
       h('span', { class: 'qi-read' }, a.mode === 'write' ? writeAnswerFace(e, a) : h('span', { class: 'qi-ko' }, readingOf(e).romaji)),
       given,
       parts,
-      a.cheat ? h('span', { class: 'cheat-tag' }, '컨닝') : a.hint ? h('span', { class: 'cheat-tag' }, '힌트') : null,
+      a.cheat ? h('span', { class: 'cheat-tag' }, '컨닝') : a.hint ? h('span', { class: 'cheat-tag', title: `힌트 ${a.hint}단계까지 봤어요` }, h('span', { 'aria-hidden': 'true' }, '힌트 ' + a.hint), srOnly(`힌트 ${a.hint}단계까지 본 문제`)) : null,
       markChip(a.mark, null, 'qi-mark'));
     btn.addEventListener('click', () => {
       const open = btn.getAttribute('aria-expanded') === 'true';
@@ -3518,26 +3556,28 @@
       if (a.mode === 'read' || (a.typed != null && a.check && a.check.segments)) {
         detail.appendChild(readingFeedback(e, a.reading, a.check, a.typed, a.skipped, a.cheat));
       }
-      if (a.cells && a.cells.length) {
+      if (a.slots && a.slots.length) {
+        if (a.formNote) detail.appendChild(h('p', { class: 'wr-form' }, rich(a.formNote)));
+        const issues = issuesList(a.issues);
+        if (issues) detail.appendChild(issues);
         const box = h('div', { class: 'wc-detail' });
-        const strip = h('div', { class: 'wc-strip', role: 'group', 'aria-label': '칸별 결과' });
-        const show = (c) => {
-          Array.from(strip.children).forEach((b) => b.setAttribute('aria-pressed', Number(b.dataset.i) === c.i ? 'true' : 'false'));
+        const strip = h('div', { class: 'wc-strip wa-strip', role: 'group', 'aria-label': '정답에 맞춰 본 칸' });
+        const show = (sl) => {
+          Array.from(strip.children).forEach((b) => b.setAttribute('aria-pressed', b.dataset.key === sl.key ? 'true' : 'false'));
           box.textContent = '';
-          box.appendChild(App.ui.judgeDetail(c.result, c.strokes, { ch: c.ch, box: c.box, mark: c.neutral ? undefined : c.mark, empty: c.empty, skipped: c.skipped, compact: true }));
+          box.setAttribute('data-type', sl.type);
+          add(box, slotDetail(sl));
         };
-        a.cells.forEach((c, k) => strip.appendChild(h('button', {
-          type: 'button', class: 'wc-cell wc-' + (c.mark === '-' ? 'na' : c.mark), 'data-i': c.i, 'aria-pressed': 'false',
-          'aria-label': `${k + 1}번째 칸 ${c.ch} — ${c.empty ? '빈칸' : c.neutral ? '채점 안 함' : MARK_LABEL[c.mark]}`, on: { click: () => show(c) },
-        }, jp(c.ch, 'wc-ch'), h('span', { class: 'wc-mark', 'aria-hidden': 'true' }, c.empty ? '빈칸' : MARK_SYM[c.mark]))));
+        a.slots.forEach((sl) => strip.appendChild(slotButton(sl, () => show(sl))));
         detail.appendChild(strip);
         detail.appendChild(box);
-        const first = a.cells.find((c) => c.mark === 'x' || c.mark === 't') || a.cells[0];
+        const first = a.slots.find((sl) => sl.type === 'missing' || sl.type === 'extra' || sl.mark === 'x' || sl.mark === 't') || a.slots[0];
         if (first) show(first);
       }
       if (a.meaning !== undefined) {
         detail.appendChild(h('p', { class: 'wr-mean-line' }, '뜻: ', okChip(a.meaning === true ? true : a.meaning === false ? false : null), ' ',
-          a.meaning == null ? '안 풀었어요' : a.meaningInput ? ['내 답 「', a.meaningInput, '」'] : '모르겠어요', a.overridden ? ' — 맞은 걸로 인정' : ''));
+          a.meaningHint && a.meaning == null ? '힌트로 봐서 뜻 맞히기는 건너뛰었어요'
+            : a.meaning == null ? '안 풀었어요' : a.meaningInput ? ['내 답 「', a.meaningInput, '」'] : '모르겠어요', a.overridden ? ' — 맞은 걸로 인정' : ''));
       }
     }
     return h('li', { class: 'qrow qrow-' + (a.mark === '-' ? 'na' : a.mark) }, btn, detail);

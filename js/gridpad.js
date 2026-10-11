@@ -26,8 +26,27 @@
  *   gp.setEnabled(bool), gp.isEnabled(), gp.setGuideText(str|null), gp.setPenOnly(bool), gp.isPenOnly(), gp.hasSeenPen()
  *   gp.setMode('grid'|'single'), gp.getMode(), gp.setAutoAdvance(bool), gp.focusCell(i), gp.getFocus()
  *   gp.redraw(), gp.destroy()
+ *   gp.getWrittenCells()  → [{ index, strokes, box }] for the cells with ink, in cell order (empty cells skipped)
+ *   gp.setCountHint(k|0), gp.getCountHint()   the 글자 수 hint: the first k write cells are tinted (cells and minis,
+ *                         and the big cell while it shows one of them); 0 / null turns it off
  *   gp.onChange = fn({ reason: 'stroke'|'undo'|'clear'|'clearAll'|'focus'|'mode'|'autoAdvance', cell, total, manual })
  *                 manual: a 'mode' change the learner made (the 모든 칸 / 한 칸씩 switch or setMode), not the auto choice
+ *
+ * Open mode — GridPad.create(host, { open: true, minCells, ... }): a run of empty cells that never tells how long the
+ * answer is (cells is ignored). It starts with max(minCells (default 6), one full grid row at the current width) cells,
+ * and whenever the last cell gets ink one more cell is appended, so there is always an empty cell after the last one
+ * written; the learner stops whenever they like. Grid rows are all as wide as the pad (a fixed cell side from the
+ * width: the cells never resize as the run grows); 한 칸씩 shows '3번째 칸' (no total), its strip grows with the run,
+ * and 다음 is there on every written cell. 'auto' picks 한 칸씩 on a narrow phone (max-width 559px), else 모든 칸.
+ *   gp.open === true; gp.cellCount is the current count (it grows); getWrittenCells() is the answer: the written cells
+ *   in order (an empty cell left in between and the trailing ones are not part of it).
+ *   clearAll() goes back to the starting count (with room for the guide / count hint); undo / clearCell never remove
+ *   cells; a resize never removes cells either (a wider pad adds cells to fill its first row).
+ *   setGuideText(str): the guide glyphs fill the first cells (whitespace = a cell without a glyph; the run grows to
+ *   hold the whole guide). setCountHint(k) (the 글자 수 hint, which deliberately tells the length) tints the first k
+ *   cells and grows the run to k + 1, so the cell after the last tinted one shows where the count ends. setMarks / onCellClick use the cell index; after grading only cells with ink or a mark
+ *   are buttons. Growth happens on pen-up (commit), after the ink check, so it never touches a stroke in progress, and
+ *   it only appends below / to the right, so nothing on the page moves under the pen.
  *
  * The 모든 칸 / 한 칸씩 switch ignores a touch while a pen is writing or hovering near the block (pen-only on, a pen
  * seen, html.pad-pen-near): that is the writing hand's palm, and switching the view under it would look like the
@@ -72,6 +91,7 @@
   const SPACE = 0.4;                      // width of a space cell, in cells
   const ROW_BORDER = 2;                   // .gp-row border width (css/gridpad.css)
   const ADVANCE_MS = 1200;                // single mode: pause after the last stroke before moving on
+  const OPEN_MIN = 6;                     // open mode: fewest cells to start with
 
   // The teacher's red-pen marks: the same hand-drawn paths and labels as app.js, styled by .mk in app.css;
   // n = neutral (not graded): a short grey dash in the upper-right corner, where it can't pass for a written ー.
@@ -128,6 +148,21 @@
     return { s, rows: rowsFor(cells, units, s, avail) };
   }
 
+  /* Open mode: cells per row at the comfortable size (≥ 1), and a cell side that fills the row (≤ MAX) — from the
+   * width alone, so the cells keep their size while the run grows. */
+  function openPerRow(width) {
+    const avail = Math.max(1, width - 2 * ROW_BORDER);
+    return Math.max(1, Math.floor(avail / COMFY + 1e-6));
+  }
+  function planOpen(count, width) {
+    const avail = Math.max(1, width - 2 * ROW_BORDER);
+    const per = openPerRow(width);
+    const s = Math.max(1, Math.min(MAX, Math.floor(avail / per)));
+    const rows = [];
+    for (let i = 0; i < count; i += per) rows.push(Array.from({ length: Math.min(per, count - i) }, (_, k) => i + k));
+    return { s, rows };
+  }
+
   function create(host, options) {
     const Ink = root.DrawPad && root.DrawPad.Ink;
     if (!Ink) throw new Error('GridPad needs js/drawpad.js (DrawPad.Ink) loaded first');
@@ -135,22 +170,29 @@
     const doc = host.ownerDocument || document;
     const win = doc.defaultView || root;
 
-    const cells = normCells(opts.cells);
-    const n = cells.length;
-    const units = cells.map((c) => (c.kind === 'space' ? SPACE : 1));
-    const totalUnits = units.reduce((a, b) => a + b, 0);
-    const writeIdx = [];
-    cells.forEach((c, i) => { if (c.kind === 'write') writeIdx.push(i); });
-    const ordinal = new Map(writeIdx.map((i, k) => [i, k + 1]));
+    // Open mode: no cells from the caller; empty write cells that grow with the writing (see the header).
+    const open = !!opts.open;
+    const minCells = open ? Math.max(1, Math.min(200, Math.floor(Number(opts.minCells)) || OPEN_MIN)) : 0;
+    let openRow = 0;                    // open mode: cells per grid row at the last measured width (0 = not measured)
 
-    const data = cells.map(() => []);   // per cell: [{ pts: [{ x, y, f }], type }] in cell units
+    // The cells and everything per cell, indexed by cell (addCell / removeLastCell keep them in step).
+    const cells = [];
+    let n = 0;
+    const units = [];
+    let totalUnits = 0;
+    const writeIdx = [];
+    const ordinal = new Map();
+    const data = [];                    // per cell: [{ pts: [{ x, y, f }], type }] in cell units
+    const faces = [], cellEls = [], minis = [], miniInk = [], miniMark = [];
+
     const order = [];                   // cell index of every committed stroke, oldest first (for undo)
     const marks = new Map();            // cell index → 'o'|'t'|'x'
     let guide = null;                   // per-cell model glyphs, or null
+    let countHint = 0;                  // setCountHint: the first countHint write cells are tinted (0 = off)
     let enabled = true, penOnly = !!opts.penOnly, autoAdvance = !!opts.autoAdvance;
     let modeAuto = !(opts.mode === 'grid' || opts.mode === 'single');
     let mode = modeAuto ? 'grid' : opts.mode;
-    let focus = writeIdx.length ? writeIdx[0] : -1;
+    let focus = -1;
     let ready = false, destroyed = false, rafId = 0, layoutRaf = 0, advTimer = 0;
     let dpr = 1, cellPx = 0, bigPx = 0, lastWidth = -1, gridKey = '';
     let pen = null;
@@ -197,10 +239,8 @@
       return { el, canvas, ctx: canvas.getContext('2d'), ghost, mark, hit };
     }
 
-    const faces = cells.map((c, i) => (c.kind === 'write' ? makeFace('gp-cell', i) : null));
-    const cellEls = cells.map((c, i) => (faces[i] ? faces[i].el : h('div', { class: 'gp-space', 'data-i': i, 'aria-hidden': 'true' })));
-    faces.forEach((f, i) => { if (f) f.hit.addEventListener('click', () => { setFocus(i); cellClick(i); }); });
     const sheet = h('div', { class: 'gp-sheet' });
+    const rowEls = [];                  // the sheet's rows, reused across re-plans (syncRows)
 
     const big = makeFace('gp-big', '');
     const adv = h('span', { class: 'gp-adv', 'aria-hidden': 'true' });
@@ -211,18 +251,59 @@
     const nextBtn = h('button', { type: 'button', class: 'btn btn-sm gp-next', 'aria-label': '다음 칸', on: { click: () => step(1) } },
       h('span', { class: 'gp-nav-text' }, '다음'), chevron('M9 5l7 7-7 7'));
     const posEl = h('span', { class: 'gp-pos', 'aria-live': 'polite' });
-    const miniInk = [], miniMark = [];
-    const minis = cells.map((c, i) => {
-      if (c.kind !== 'write') return h('span', { class: 'gp-mini-gap', 'aria-hidden': 'true' });
-      const b = h('button', { type: 'button', class: 'gp-mini', 'data-i': i, on: { click: () => setFocus(i) } });
-      const svg = s('svg', { class: 'gp-mini-svg', viewBox: '0 0 100 100', 'aria-hidden': 'true', focusable: 'false' });
-      s('path', { d: 'M50,4V96M4,50H96', class: 'gp-cross' }, svg);
-      miniInk[i] = s('g', { class: 'gp-mini-ink' }, svg);
-      miniMark[i] = h('span', { class: 'gp-mark', 'aria-hidden': 'true' });
-      b.append(svg, miniMark[i]);
-      return b;
-    });
-    const strip = h('div', { class: 'gp-strip', role: 'group', 'aria-label': '칸 미리보기 — 누르면 그 칸으로 가요' }, ...minis);
+    const strip = h('div', { class: 'gp-strip', role: 'group', 'aria-label': '칸 미리보기 — 누르면 그 칸으로 가요' });
+
+    // One more cell at the end: its face (or space block), its mini in the strip. Not laid out yet (layout / syncRows).
+    function addCell(c) {
+      const i = cells.length;
+      cells.push(c);
+      n = cells.length;
+      const u = c.kind === 'space' ? SPACE : 1;
+      units.push(u);
+      totalUnits += u;
+      data.push([]);
+      if (c.kind === 'write') { writeIdx.push(i); ordinal.set(i, writeIdx.length); }
+      const f = c.kind === 'write' ? makeFace('gp-cell', i) : null;
+      faces.push(f);
+      cellEls.push(f ? f.el : h('div', { class: 'gp-space', 'data-i': i, 'aria-hidden': 'true' }));
+      if (f) f.hit.addEventListener('click', () => { setFocus(i); cellClick(i); });
+      let mini;
+      if (c.kind !== 'write') mini = h('span', { class: 'gp-mini-gap', 'aria-hidden': 'true' });
+      else {
+        mini = h('button', { type: 'button', class: 'gp-mini', 'data-i': i, on: { click: () => setFocus(i) } });
+        const svg = s('svg', { class: 'gp-mini-svg', viewBox: '0 0 100 100', 'aria-hidden': 'true', focusable: 'false' });
+        s('path', { d: 'M50,4V96M4,50H96', class: 'gp-cross' }, svg);
+        miniInk[i] = s('g', { class: 'gp-mini-ink' }, svg);
+        miniMark[i] = h('span', { class: 'gp-mark', 'aria-hidden': 'true' });
+        mini.append(svg, miniMark[i]);
+      }
+      minis.push(mini);
+      strip.appendChild(mini);
+      gridKey = '';
+    }
+
+    // Open mode (clearAll): drops the last cell and its elements. Only called with no stroke in progress.
+    function removeLastCell() {
+      const i = cells.length - 1;
+      if (i < 0) return;
+      cellEls[i].remove();
+      minis[i].remove();
+      totalUnits -= units[i];
+      cells.pop(); units.pop(); data.pop(); faces.pop(); cellEls.pop(); minis.pop();
+      miniInk.length = Math.min(miniInk.length, i);
+      miniMark.length = Math.min(miniMark.length, i);
+      if (writeIdx[writeIdx.length - 1] === i) writeIdx.pop();
+      ordinal.delete(i);
+      marks.delete(i);
+      dirty.delete(i);
+      n = cells.length;
+      if (focus >= n) focus = writeIdx.length ? writeIdx[writeIdx.length - 1] : -1;
+      gridKey = '';
+    }
+
+    (open ? [] : normCells(opts.cells)).forEach(addCell);
+    for (let k = 0; open && k < minCells; k++) addCell({ ch: '', kind: 'write' });
+    focus = writeIdx.length ? writeIdx[0] : -1;
     const stage = h('div', { class: 'gp-stage' }, big.el, h('div', { class: 'gp-nav' }, prevBtn, posEl, nextBtn));
     const single = h('div', { class: 'gp-single' }, stage, strip);
 
@@ -247,7 +328,7 @@
     // fitScreen: measures the small viewport's height (css 100svh)
     const vhProbe = opts.fitScreen ? h('div', { class: 'gp-vh', 'aria-hidden': 'true' }) : null;
 
-    const el = h('div', { class: 'gp' + (opts.fitScreen ? ' gp-fit' : ''), role: 'group', 'aria-label': opts.label }, sheet, single, bar, vhProbe);
+    const el = h('div', { class: 'gp' + (opts.fitScreen ? ' gp-fit' : '') + (open ? ' gp-open' : ''), role: 'group', 'aria-label': opts.label }, sheet, single, bar, vhProbe);
     host.appendChild(el);
 
     /* ---------------------------------------------------------- labels, marks, guide, minis */
@@ -256,13 +337,25 @@
       if (i < 0) return '';
       const k = data[i].length;
       const m = marks.get(i);
-      return `${ordinal.get(i)}번째 칸 · ${k ? k + '획' : '빈칸'}${m ? ' · ' + MARKS[m].label : ''}`;
+      const c = counted(i) ? ` (힌트 ${countHint}칸 안)` : '';
+      return `${ordinal.get(i)}번째 칸${c} · ${k ? k + '획' : '빈칸'}${m ? ' · ' + MARKS[m].label : ''}`;
     }
+
+    // Inside the 글자 수 hint (setCountHint): one of the first countHint write cells.
+    function counted(i) { return countHint > 0 && i >= 0 && (ordinal.get(i) || Infinity) <= countHint; }
 
     function labelFace(f, i) {
       const t = cellLabel(i);
       f.canvas.setAttribute('aria-label', t);
       f.hit.setAttribute('aria-label', t + ' — 결과 보기');
+      f.hit.hidden = !hitOn(i);
+      f.el.classList.toggle('is-counted', counted(i));
+      if (open) f.el.classList.toggle('is-blank', i < 0 || !data[i].length);
+    }
+
+    // After grading (disabled, with onCellClick) a cell is a button — in open mode only a cell with ink or a mark.
+    function hitOn(i) {
+      return !enabled && typeof opts.onCellClick === 'function' && i >= 0 && i < n && (!open || data[i].length > 0 || marks.has(i));
     }
 
     function renderMark(holder, m) {
@@ -296,6 +389,7 @@
 
     function guideChar(i) {
       if (!guide || i < 0) return '';
+      if (open) return guide[i] && !/\s/.test(guide[i]) ? guide[i] : '';
       return (guide.length === n ? guide[i] : cells[i].ch) || '';
     }
 
@@ -316,6 +410,7 @@
       });
       renderMark(miniMark[i], marks.get(i));
       minis[i].setAttribute('aria-label', cellLabel(i));
+      minis[i].classList.toggle('is-counted', counted(i));
     }
 
     // Everything about cell i outside its canvas: labels, marks, mini, the big face when it shows i.
@@ -335,7 +430,8 @@
       renderMark(big.mark, marks.get(focus));
       labelFace(big, focus);
       const k = writeIdx.indexOf(focus);
-      posEl.textContent = writeIdx.length ? `${k + 1} / ${writeIdx.length}` : '';
+      // open mode: where the learner is, never out of how many (the last cell is always the empty one after the run)
+      posEl.textContent = !writeIdx.length ? '' : open ? `${k + 1}번째 칸` : `${k + 1} / ${writeIdx.length}`;
       prevBtn.disabled = k <= 0;
       nextBtn.disabled = k < 0 || k >= writeIdx.length - 1;
       writeIdx.forEach((i) => { if (i === focus) minis[i].setAttribute('aria-current', 'true'); else minis[i].removeAttribute('aria-current'); });
@@ -344,8 +440,8 @@
     function updateClickable() {
       const on = !enabled && typeof opts.onCellClick === 'function';
       el.classList.toggle('is-clickable', on);
-      faces.forEach((f) => { if (f) f.hit.hidden = !on; });
-      big.hit.hidden = !on || focus < 0;
+      faces.forEach((f, i) => { if (f) f.hit.hidden = !hitOn(i); });
+      big.hit.hidden = !hitOn(focus);
     }
 
     function cellClick(i) {
@@ -357,16 +453,54 @@
     /* ---------------------------------------------------------- layout */
 
     function autoMode(width) {
-      if (writeIdx.length < 2) return 'grid';
+      if (!open && writeIdx.length < 2) return 'grid';
       let narrow;
       try { narrow = win.matchMedia('(max-width: 559px)').matches; } catch (e) { narrow = width < 560; }
-      return narrow && totalUnits * COMFY > width - 2 * ROW_BORDER ? 'single' : 'grid';
+      // open mode: the run never fits one row on a narrow phone (and must not flip views as it grows)
+      return narrow && (open || totalUnits * COMFY > width - 2 * ROW_BORDER) ? 'single' : 'grid';
+    }
+
+    /* ---------------------------------------------------------- open mode: the run of cells */
+
+    // The starting count: minCells, one full grid row at the current width, room for the whole guide, and for the
+    // count hint plus the cell after it (where the count ends).
+    function baseCount() {
+      return Math.max(minCells, openRow, guide ? guide.length : 0, countHint ? countHint + 1 : 0);
+    }
+
+    // Appends empty cells up to k (open mode). Returns whether any was added; the caller lays out.
+    function ensureCount(k) {
+      if (!open || n >= k) return false;
+      const from = n;
+      while (n < k) addCell({ ch: '', kind: 'write' });
+      for (let i = from; i < n; i++) refreshCell(i);
+      if (focus < 0 && writeIdx.length) focus = writeIdx[0];
+      renderBig();
+      return true;
+    }
+
+    // Lays out now if the pad has been laid out before (else the size observer will).
+    function relayout() { if (lastWidth > 0 && !destroyed) layout(); }
+
+    /* Puts the planned rows into the sheet, moving only what changed: the cells a stroke may be on stay put when the run
+     * grows (a new cell joins the last row or starts a new one below), so the page never moves under the pen. */
+    function syncRows(rows) {
+      rows.forEach((r, k) => {
+        let row = rowEls[k];
+        if (!row) row = rowEls[k] = h('div', { class: 'gp-row' });
+        if (sheet.children[k] !== row) sheet.insertBefore(row, sheet.children[k] || null);
+        r.forEach((i, j) => { if (row.children[j] !== cellEls[i]) row.insertBefore(cellEls[i], row.children[j] || null); });
+        while (row.children.length > r.length) row.removeChild(row.lastChild);
+      });
+      while (sheet.children.length > rows.length) sheet.removeChild(sheet.lastChild);
+      rowEls.length = rows.length;
     }
 
     function layout() {
       layoutRaf = 0;
       if (destroyed) return;
       const width = el.clientWidth;
+      if (open && width >= 1) { openRow = openPerRow(width); ensureCount(baseCount()); }
       let modeChanged = false;
       if (modeAuto && width >= 1) {
         const want = autoMode(width);
@@ -383,13 +517,12 @@
       lastWidth = width;
       dpr = Ink.pixelRatio(win);
       if (mode === 'grid') {
-        const plan = planGrid(cells, units, width);
-        const key = plan.s + ':' + plan.rows.map((r) => r.length).join(',');
+        const plan = open ? planOpen(n, width) : planGrid(cells, units, width);
+        const key = n + '/' + plan.s + ':' + plan.rows.map((r) => r.length).join(',');
         if (key !== gridKey) {
           gridKey = key;
           el.style.setProperty('--gp-cell', plan.s + 'px');
-          sheet.textContent = '';
-          plan.rows.forEach((r) => sheet.appendChild(h('div', { class: 'gp-row' }, ...r.map((i) => cellEls[i]))));
+          syncRows(plan.rows);
         }
         cellPx = plan.s;
         faces.forEach((f) => { if (f) Ink.fitCanvas(f.canvas, cellPx, cellPx, dpr); });
@@ -424,10 +557,22 @@
     let stopFit = () => {};
     if (vhProbe) {
       const onFit = () => { if (!destroyed) fitScreen(); };
-      const ro = win.ResizeObserver ? new win.ResizeObserver(onFit) : null;
+      // The body observer's callback runs one frame later: a new --gp-fit resizes the big cell and so the body, which
+      // inside the same observer delivery is a "ResizeObserver loop completed with undelivered notifications" error
+      // (a short phone opening a question in 한 칸씩).
+      let fitRaf = 0;
+      const onBody = () => {
+        if (destroyed || fitRaf) return;
+        fitRaf = win.requestAnimationFrame ? win.requestAnimationFrame(() => { fitRaf = 0; onFit(); }) : setTimeout(() => { fitRaf = 0; onFit(); }, 16);
+      };
+      const ro = win.ResizeObserver ? new win.ResizeObserver(onBody) : null;
       if (ro && doc.body) ro.observe(doc.body);
       win.addEventListener('resize', onFit);
-      stopFit = () => { if (ro) ro.disconnect(); win.removeEventListener('resize', onFit); };
+      stopFit = () => {
+        if (ro) ro.disconnect();
+        win.removeEventListener('resize', onFit);
+        if (fitRaf) { if (win.cancelAnimationFrame) win.cancelAnimationFrame(fitRaf); else clearTimeout(fitRaf); fitRaf = 0; }
+      };
     }
 
     function scheduleLayout() {
@@ -599,6 +744,8 @@
         if (mode === 'grid') focus = i;
         invalidate(i);
         refreshCell(i);
+        // open mode: ink in the last cell → one more empty cell after it (pen-up: no stroke is in progress)
+        if (open && i === n - 1 && ensureCount(n + 1)) relayout();
         notify('stroke', i);
         if (mode === 'single' && autoAdvance) startAdvance(i);
       },
@@ -709,8 +856,16 @@
       data.forEach((d, i) => { data[i] = []; });
       order.length = 0;
       marks.clear();
+      // open mode: back to the starting count
+      let resized = false;
+      if (open) {
+        const base = baseCount();
+        while (n > base) { removeLastCell(); resized = true; }
+        if (ensureCount(base)) resized = true;
+      }
       writeIdx.forEach(refreshCell);
       if (writeIdx.length) setFocus(writeIdx[0]);
+      if (resized) relayout();
       invalidateAll();
       if (had) notify('clearAll', null);
     }
@@ -722,8 +877,33 @@
     }
 
     function setGuideText(str) {
+      if (open) {
+        // the first cells, whatever is written there; the run grows to hold it all (trailing whitespace dropped)
+        guide = str == null || typeof str === 'boolean' ? null : Array.from(String(str).replace(/\s+$/, ''));
+        if (guide && !guide.length) guide = null;
+        const grew = ensureCount(baseCount());
+        writeIdx.forEach(refreshCell);
+        if (grew) relayout();
+        return;
+      }
       guide = str == null || str === false ? null : str === true ? cells.map((c) => c.ch) : Array.from(String(str));
       writeIdx.forEach(refreshCell);
+    }
+
+    // The 글자 수 hint: tints the first k write cells (open mode: the run grows to k + 1). 0 / null / false = off.
+    function setCountHint(k) {
+      countHint = Math.max(0, Math.min(200, Math.floor(Number(k)) || 0));
+      const grew = ensureCount(baseCount());
+      writeIdx.forEach(refreshCell);
+      renderBig();
+      if (grew) relayout();
+    }
+
+    // The answer as written: every cell with ink, in cell order (empty cells — skipped or trailing — left out).
+    function getWrittenCells() {
+      const out = [];
+      data.forEach((d, i) => { if (d.length && faces[i]) out.push({ index: i, strokes: getCellStrokes(i), box: { x: 0, y: 0, w: UNIT, h: UNIT } }); });
+      return out;
     }
 
     function setEnabled(v) {
@@ -769,9 +949,13 @@
 
     const api = {
       el,
-      cellCount: n,
+      open,
+      get cellCount() { return n; },
       onChange: typeof opts.onChange === 'function' ? opts.onChange : null,
       getCellStrokes,
+      getWrittenCells,
+      setCountHint,
+      getCountHint: () => countHint,
       getCellBox: () => ({ x: 0, y: 0, w: UNIT, h: UNIT }),
       getStrokeCount: () => order.length,
       getCellStrokeCount: (i) => (data[i] ? data[i].length : 0),
