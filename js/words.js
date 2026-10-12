@@ -29,7 +29,8 @@
  * Hints (user request): a ladder, one step per press of 힌트 — 1 뜻, 2 글자 수 (the cells are tinted too), 3 로마자 발음;
  *   a step already on screen is skipped (쓰기 shows the meaning: 글자 수 → 로마자; 문제 보기 한국어 + 발음 shows the
  *   reading). The answer's length is shown only by 힌트 2. 한자 읽기 after the 뜻 hint skips its 뜻 맞히기 step (not
- *   recorded). A hint tags the answer like 컨닝 does in the kana tests (the run keeps the highest step reached).
+ *   recorded). A hint tags the answer ('힌트 N': the highest step reached) and records it as a partial miss — no ○, and
+ *   ln(1 + steps opened) / ln(1 + steps of the mode) of a miss for 틀린 것 위주 (SPEC-words N; hintSteps, wrongScore).
  * Recording: per entry KanaStore.words.recordResult (read / write / meaning / kanji reading + meaning parts);
  *   per kana cell KanaApp.recordWriting(ch, mark, { source: 'word' }) (records screen; extras / kanji are not).
  * UI decisions (beyond the spec text):
@@ -155,6 +156,8 @@
       kanji: { reading: { o: g(kj.reading, 'o'), t: g(kj.reading, 't'), x: g(kj.reading, 'x') }, meaning: { ok: g(kj.meaning, 'ok'), ng: g(kj.meaning, 'ng') } },
       meaning: { ok: g(s.meaning, 'ok'), ng: g(s.meaning, 'ng') },
       cheat: n0(s.cheat), overridden: n0(s.overridden),
+      // 힌트 (SPEC-words N): hinted ○ answers (no ○) and the misses the hints added, in thousandths — 0 in older data
+      hint: { write: g(s.hint, 'write'), kanji: g(s.hint, 'kanji') }, hintMiss: { write: g(s.hintMiss, 'write'), kanji: g(s.hintMiss, 'kanji') },
       recent: Array.isArray(s.recent) ? s.recent.filter((r) => r && typeof r === 'object') : [],
       last: n0(s.last),
     };
@@ -167,7 +170,7 @@
     const t = s.write.t + s.kanji.reading.t;
     const x = s.read.ng + s.write.x + s.kanji.reading.x + s.kanji.meaning.ng + s.meaning.ng;
     return {
-      o, t, x, n: o + t + x, cheat: s.cheat, last: s.last,
+      o, t, x, n: o + t + x, cheat: s.cheat, hint: s.hint.write + s.hint.kanji, last: s.last,
       parts: {
         read: { o: s.read.ok, x: s.read.ng },
         write: { o: s.write.o, t: s.write.t, x: s.write.x },
@@ -285,18 +288,24 @@
     return parts.join(' · ') + (code >= 0 && code < 11172 && code % 28 ? '이' : '가') + ' 있어요';
   }
 
+  // A practice kind's lifetime answers: good ○, tri △, bad ✕, hinted (right with hints — no ○), hintMiss (what the
+  // hints added to the misses, as a number of misses).
   function practiceTotals(e, mode) {
     const s = statsOf(e);
-    if (mode === 'write') return { good: s.write.o, tri: s.write.t, bad: s.write.x };
-    if (mode === 'kanji') return { good: s.kanji.reading.o + s.kanji.meaning.ok, tri: s.kanji.reading.t, bad: s.kanji.reading.x + s.kanji.meaning.ng };
-    return { good: s.read.ok + s.meaning.ok, tri: 0, bad: s.read.ng + s.meaning.ng };
+    if (mode === 'write') return { good: s.write.o, tri: s.write.t, bad: s.write.x, hinted: s.hint.write, hintMiss: s.hintMiss.write / 1000 };
+    if (mode === 'kanji') {
+      return { good: s.kanji.reading.o + s.kanji.meaning.ok, tri: s.kanji.reading.t, bad: s.kanji.reading.x + s.kanji.meaning.ng,
+        hinted: s.hint.kanji, hintMiss: s.hintMiss.kanji / 1000 };
+    }
+    return { good: s.read.ok + s.meaning.ok, tri: 0, bad: s.read.ng + s.meaning.ng, hinted: 0, hintMiss: 0 };
   }
 
-  // Lifetime "how often wrong" in 0..1 (△ counts half).
+  // Lifetime "how often wrong" in 0..1: ✕ 1, △ ½, a hinted answer its partial miss (Quiz.answerMiss: a ○ with h of H
+  // hint steps ln(1 + h) / ln(1 + H) of a miss, a △ that far from ½ towards 1).
   function wrongRate(e, mode) {
     const p = practiceTotals(e, mode);
-    const n = p.good + p.tri + p.bad;
-    return n ? (p.bad + 0.5 * p.tri) / n : 0;
+    const n = p.good + p.tri + p.bad + p.hinted;
+    return n ? Math.min(1, (p.bad + 0.5 * p.tri + p.hintMiss) / n) : 0;
   }
 
   // The recent marks of this practice kind, oldest first (both parts count for read+뜻 / 한자 읽기 — MODE_KEYS).
@@ -305,11 +314,21 @@
     return statsOf(e).recent.filter((r) => keys.includes(r.m)).map((r) => r.g);
   }
 
+  // The recent answers of this practice kind as miss values, oldest first: ✕ 1, △ ½, ○ 0 — with hints (h of hn steps)
+  // the partial miss of Quiz.answerMiss (a hinted ○ is ln(1 + h) / ln(1 + hn) of a miss).
+  function recentMisses(e, mode) {
+    const keys = MODE_KEYS[mode] || MODE_KEYS.read;
+    const Q = QZ();
+    return statsOf(e).recent.filter((r) => keys.includes(r.m))
+      .map((r) => { const v = Q.answerMiss(r.g, Q.hintShare(r.h, r.hn)); return v == null ? 0 : v; });
+  }
+
   // 0..1: how badly the entry has gone in this practice kind — the lifetime wrong rate blended with its recent
-  // answers (✕ 1, △ ½), so a fresh mistake counts at once and fades as the learner gets it right again.
+  // answers (✕ 1, △ ½, a hinted answer its partial miss), so a fresh mistake counts at once and fades as the learner
+  // gets it right again.
   function wrongScore(e, mode) {
-    const marks = recentMarks(e, mode);
-    const rec = marks.length ? marks.reduce((a, g) => a + (g === 'x' ? 1 : g === 't' ? 0.5 : 0), 0) / marks.length : 0;
+    const misses = recentMisses(e, mode);
+    const rec = misses.length ? misses.reduce((a, v) => a + v, 0) / misses.length : 0;
     return Math.min(1, 0.5 * wrongRate(e, mode) + 0.5 * rec);
   }
 
@@ -320,10 +339,11 @@
   }
 
   // Answers of this practice kind, 컨닝 / 힌트 answers included (stats.cheat: any kind — the store keeps no per-kind
-  // count; a ○ with a hint is no success, yet the word was practised).
+  // count, and before hints were kept apart a hinted ○ was counted there too; a ○ with a hint is no ○, yet the word
+  // was practised).
   function answersIn(e, mode) {
     const p = practiceTotals(e, mode);
-    return p.good + p.tri + p.bad + statsOf(e).cheat;
+    return p.good + p.tri + p.bad + p.hinted + statsOf(e).cheat;
   }
 
   /* Quiz statsOf for entry ids — finite runs (Quiz.pickFinite) and 무한 모드 (Quiz.nextEndless) alike: the entry's
@@ -346,18 +366,53 @@
     const factors = (id) => {
       const e = byId.get(id);
       const l = (e && less && less.get(id)) || 1;
-      return { less: l, wrong: e ? weightOf(e, mode, !!f.focusWrong) : 1 };
+      const miss = e && f.focusWrong ? wrongScore(e, mode) : 0;
+      return { less: l, wrong: f.focusWrong ? 1 + 2 * miss : 1, miss };
     };
     const scale = QZ().focusScale(pool.map((id) => { const x = factors(id); return x.less * x.wrong; }));
     return (id) => {
       const x = factors(id);
-      return { mult: scale(x.less * x.wrong), less: x.less, wrong: x.wrong };
+      const out = { mult: scale(x.less * x.wrong), less: x.less, wrong: x.wrong };
+      if (f.focusWrong) out.miss = x.miss;    // where a live run's estimate starts (Quiz.liveFocus)
+      return out;
     };
   }
 
-  // A 무한 run of 단어장: only ✕ is re-asked (△ — stroke order / direction — is not; SPEC-words A).
-  function endlessStartFor() {
-    return QZ().endlessStart({ retryTri: false });
+  // A 무한 run of 단어장: only ✕ is re-asked (△ — stroke order / direction — is not; SPEC-words A). live: Quiz.liveFocus
+  // when 틀린 것 위주 is on (the run's answers then move the weights too).
+  function endlessStartFor(live) {
+    return QZ().endlessStart(live && typeof live === 'object' ? { retryTri: false, live } : { retryTri: false });
+  }
+
+  /* A 무한 run's state (SPEC-words A): { run, pool, mult } — mult: the '…위주' multipliers from the history before the
+   * run (focusTable). With 틀린 것 위주 on the run carries them live (run.live): its own answers move them (misses and
+   * hints up, right answers down — Quiz.liveRecord), and nextEndless reads those instead of `mult`. With it off the run
+   * is exactly as before. entries: Map id → entry; prefs: { mode, focusWrong, focusLess }; now: the clock. */
+  function endlessRunFor(entries, prefs, now) {
+    const ids = Array.from(entries.keys());
+    const pr = prefs || {};
+    const statsFor = endlessStatsFor(entries, pr.mode, pr, ids, now);
+    const mult = QZ().focusTable(ids, statsFor);
+    return { run: endlessStartFor(pr.focusWrong ? QZ().liveFocus(ids, statsFor) : null), pool: ids, mult };
+  }
+
+  /* A finite run with more questions than entries and 틀린 것 위주 on: its live state (Quiz.finiteLiveStart) — after
+   * each answer the questions not asked yet are re-planned for the new weights (Quiz.finiteLiveRecord). Else null
+   * (the run's questions stay as buildQueue made them). n: the run's question count. */
+  function finiteLiveFor(entries, prefs, n, now) {
+    const pr = prefs || {};
+    const ids = Array.from(entries.keys());
+    if (!pr.focusWrong || !(n > ids.length)) return null;
+    return QZ().finiteLiveStart(ids, n, endlessStatsFor(entries, pr.mode, pr, ids, now));
+  }
+
+  /* The miss value of a finished question for a live run's estimate (Quiz.answerMiss): ○ 0, △ ½, ✕ 1, a hinted answer
+   * the partial miss of its hint steps (hintUsed of hintOf); null — leave the estimate — for an answer the entry's
+   * history does not count either (컨닝 ○, an ungraded '-'). */
+  function answerMissOf(a) {
+    const Q = QZ();
+    if (!a || (a.cheat && a.mark === 'o')) return null;
+    return Q.answerMiss(a.mark, a.hintUsed ? Q.hintShare(a.hintUsed, a.hintOf) : 0);
   }
 
   function practicePool(entries, o) {
@@ -733,6 +788,14 @@
   function hintLadder(o) {
     const p = o || {};
     return ['meaning', 'count', 'romaji'].filter((s) => (s === 'meaning' ? !!(p.kanjiMode && p.hasMeaning) : s === 'romaji' ? !p.readingShown : true));
+  }
+  /* The hint steps a question's mode has — the `of` of a hinted answer's partial miss, ln(1 + used) / ln(1 + of)
+   * (SPEC-words N): 한자 읽기 3 (뜻 · 글자 수 · 로마자; 2 for an entry without a meaning, which has no 뜻 step), 쓰기 2
+   * (글자 수 · 로마자 — the meaning is the question). A step shown up front (문제 보기 한국어 + 발음, or a word with no meaning
+   * whose reading is the question) stays in the count: it is neither used nor taken off. o = { kanjiMode, hasMeaning } */
+  function hintSteps(o) {
+    const p = o || {};
+    return p.kanjiMode && p.hasMeaning ? 3 : 2;
   }
   // The hint button's words for the step it will show: '힌트 2: 글자 수'.
   const hintLabel = (step) => (HINTS[step] ? `힌트 ${HINTS[step].n}: ${HINTS[step].name}` : '');
@@ -1164,7 +1227,8 @@
   const pure = {
     EXAMPLES, DEFAULT_PREFS, NO_TAG, normalizePrefs, statsOf, entrySummary, hasKanji, meaningsOf, displayMeaning,
     foldSearch, searchText, filterEntries, tagsOf, overallMark, answerMarks, penHeadline,
-    wrongRate, wrongScore, weightOf, answersIn, recentMarks, endlessStatsFor, endlessStartFor, practicePool, questionCount, buildQueue, meaningChoices, checkTypedWrite,
+    wrongRate, wrongScore, weightOf, answersIn, recentMarks, recentMisses, endlessStatsFor, endlessStartFor, endlessRunFor, finiteLiveFor, answerMissOf,
+    practicePool, questionCount, buildQueue, meaningChoices, checkTypedWrite,
     checkTypedReading, furigana, liveRomaji, toggleMark, toggleSmall, insertText, backspaceText, modifyBefore,
     showsReading, cellTarget, scriptOf, summarize, retryIds, badCharKind, kanaFieldError, kanjiFieldError,
     compactText, readingSample, typingSample, splitJa, effectiveTag,
@@ -1173,7 +1237,7 @@
     FORMS, readingsOf, hiraganaOf, answerForms, defaultForm, resolveForm, formReadings,
     furiganaAll, readingsLine, foldKana, romajiToKanaAll, presetStatus, importPresetWords, presetMessage, altsFieldParse,
     hintText, importResultMessage, exportFileName,
-    HINTS, hintLadder, hintLabel, hintLevel, countHint, alignSlots, skipSlots, josaKo, formNote, answerTexts, recordableChars,
+    HINTS, hintLadder, hintSteps, hintLabel, hintLevel, countHint, alignSlots, skipSlots, josaKo, formNote, answerTexts, recordableChars,
     kanjiDataMissing,
   };
 
@@ -1754,11 +1818,13 @@
       } },
     });
     const cheatTagN = sum.cheat ? h('span', { class: 'cheat-tag' }, `컨닝 ${sum.cheat}`) : null;
+    // answers right with hints (no ○: SPEC-words N)
+    const hintTagN = sum.hint ? h('span', { class: 'cheat-tag wp-hint-tag', title: `힌트를 보고 맞힌 답 ${sum.hint}번` }, `힌트 ${sum.hint}`) : null;
     const marks = sum.n
       ? h('span', { class: 'wl-marks', title: `읽기 ○${sum.parts.read.o} ✕${sum.parts.read.x} · 쓰기 ○${sum.parts.write.o} △${sum.parts.write.t} ✕${sum.parts.write.x} · 한자 ○${sum.parts.kanji.o} △${sum.parts.kanji.t} ✕${sum.parts.kanji.x} · 뜻 ○${sum.parts.meaning.o} ✕${sum.parts.meaning.x}` },
-        markChip('o', sum.o), sum.t ? markChip('t', sum.t) : null, markChip('x', sum.x), cheatTagN)
-      // practised only with 컨닝 (a cheat ○ is not counted as ○): show that, not '연습 전'
-      : cheatTagN ? h('span', { class: 'wl-marks' }, cheatTagN)
+        markChip('o', sum.o), sum.t ? markChip('t', sum.t) : null, markChip('x', sum.x), hintTagN, cheatTagN)
+      // practised only with 컨닝 / hints (neither a cheat ○ nor a hinted ○ is counted as ○): show that, not '연습 전'
+      : cheatTagN || hintTagN ? h('span', { class: 'wl-marks' }, hintTagN, cheatTagN)
         : h('span', { class: 'wl-marks wl-marks-none' }, '연습 전');
     const label = (hasKanji(e) ? e.kanji + ' (' + e.text + ')' : e.text);
     return h('li', { class: 'wl-row' + (checked ? ' is-sel' : ''), 'data-paren': /\(/.test(r.hangul) ? '1' : null },
@@ -2700,7 +2766,9 @@
   /* =================================================================== practice run */
 
   /* S.run = { mode, prefs (the 원고지 view chosen during the run updates it), active, endless: null | { run, pool, mult },
-   *           questions: [{ id, retry }], index, answers, cur, entries: Map id → entry snapshot, pool: [entry] (4지선다) } */
+   *           finite: null | Quiz.finiteLiveStart state (틀린 것 위주 on, more questions than entries: the questions not
+   *           asked yet are re-planned after each answer), questions: [{ id, retry }], index, answers, cur,
+   *           entries: Map id → entry snapshot, pool: [entry] (4지선다) } */
   function startRun(pool, pr, opts) {
     const o = opts || {};
     if (!pool.length) { toast('연습할 단어가 없어요.'); return; }
@@ -2708,13 +2776,14 @@
     const endless = !o.ids && pr.count === 'endless';
     const run = {
       mode: pr.mode, prefs: Object.assign({}, pr), active: true, label: o.label || null,
-      endless: endless ? endlessFor(entries, pr) : null,
+      endless: endless ? endlessFor(entries, pr) : null, finite: null,
       questions: [], index: 0, answers: [], cur: null, entries, pool: words(), openCheat: null,
     };
     if (endless) run.questions.push(pickEndless(run));
     else {
       const ids = o.ids ? o.ids.filter((id) => entries.has(id)) : buildQueue(pool, pr, Math.random);
       run.questions = ids.map((id) => ({ id, retry: false }));
+      if (!o.ids) run.finite = finiteLiveFor(entries, pr, ids.length);
     }
     if (!run.questions.length) { toast('연습할 단어가 없어요.'); return; }
     S.run = run;
@@ -2724,11 +2793,10 @@
     go('practice');
   }
 
-  // A 무한 run's state: the run, its pool, and the '…위주' multipliers taken from the history before the run (its
-  // own answers are the balancing's and the retries' business — SPEC-words A).
+  // A 무한 run's state: the run, its pool, and the '…위주' multipliers from the history before the run — with 틀린 것 위주
+  // on, kept live in the run and moved by its own answers (endlessRunFor, SPEC-words A).
   function endlessFor(entries, pr) {
-    const ids = Array.from(entries.keys());
-    return { run: endlessStartFor(), pool: ids, mult: QZ().focusTable(ids, endlessStatsFor(entries, pr.mode, pr, ids)) };
+    return endlessRunFor(entries, pr);
   }
 
   function pickEndless(run) {
@@ -2736,9 +2804,17 @@
     return { id: pick.key, retry: pick.retry };
   }
 
+  // The answer of the current question (run.questions[run.index]): kept for the tally / 결과, and — 무한 — the spaced
+  // retry and, with 틀린 것 위주, the live weights; a finite run with live weights re-plans the questions after it.
   function addAnswer(run, a) {
     run.answers.push(a);
-    if (run.endless) QZ().endlessRecord(run.endless.run, a.id, a.mark, Math.random, run.endless.pool.length);
+    const miss = answerMissOf(a);
+    if (run.endless) QZ().endlessRecord(run.endless.run, a.id, a.mark, Math.random, run.endless.pool.length, miss);
+    else if (run.finite) {
+      const head = run.questions.slice(0, run.index + 1);
+      const tail = QZ().finiteLiveRecord(run.finite, head.map((q) => q.id), a.id, a.mark, Math.random, null, miss);
+      if (tail) run.questions = head.concat(tail.map((id) => ({ id, retry: false })));
+    }
   }
 
   // A question whose second part (뜻) was answered wrong but not yet confirmed: record it as wrong now.
@@ -2788,8 +2864,10 @@
     addAnswer(run, {
       id: c.entry.id, entry: c.entry, mode: run.mode, mark, reading, meaning: c.meaningAsked ? (partial ? null : meaningOk) : undefined,
       meaningInput: c.meaningInput || '', overridden: !!c.overridden, cheat: !!c.cheat, skipped: !!c.skipped,
-      // hint: the highest hint step reached (1 뜻 · 2 글자 수 · 3 로마자; 0 none); meaningHint: 한자 읽기's 뜻 step skipped
-      hint: c.hintCounts ? c.hintLevel || 1 : 0, meaningHint: !!c.meaningHint,
+      // hint: the highest hint step reached (1 뜻 · 2 글자 수 · 3 로마자; 0 none); hintUsed / hintOf: the steps opened / the
+      // steps the mode has (the partial miss, SPEC-words N); meaningHint: 한자 읽기's 뜻 step skipped
+      hint: c.hintCounts ? c.hintLevel || 1 : 0, hintUsed: c.hintCounts ? c.hint || 1 : 0, hintOf: c.hintCounts ? c.hintOf || 0 : 0,
+      meaningHint: !!c.meaningHint,
       typed: c.typed || null, check: c.check || null, slots: c.slots || null, issues: c.issues || null, formNote: c.formNote || null,
       form: c.form || null, partial: !!partial, neutral: !!c.neutral, answerText: c.answerText || null, converted: c.converted || null,
     });
@@ -3219,6 +3297,9 @@
     const showRead = !kanjiMode && (showsReading(pr.promptView) || !meanings[0]);
     // 힌트: 1 뜻 (한자 읽기) → 2 글자 수 → 3 로마자 (unless the reading is up front)
     const ladder = hintLadder({ kanjiMode, readingShown: showRead, hasMeaning: !!displayMeaning(entry) });
+    cur.hintOf = hintSteps({ kanjiMode, hasMeaning: !!displayMeaning(entry) });
+    // what a graded answer records about the hints: { used, of } (a partial miss), null without hints
+    const hintRecord = () => (cur.hintCounts && cur.hint > 0 ? { used: cur.hint, of: cur.hintOf } : null);
     let gp = null, ki = null, busy = false;
 
     // ---- prompt card: compact, so the 원고지 and its tools stay on the first screen — a small line (what to write ·
@@ -3548,9 +3629,10 @@
     }
 
     function recordGrade(res) {
+      // the per-char kana stats have no hints: there a hinted word's chars count like 컨닝 (as before)
       const cheat = !!(cur.cheat || cur.hintCounts);
       if (res.grade === 'o' || res.grade === 't' || res.grade === 'x') {
-        try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: res.grade, cheat }); } catch (e) { console.error(e); }
+        try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: res.grade, cheat: !!cur.cheat, hint: hintRecord() }); } catch (e) { console.error(e); }
       }
       for (const c of recordableChars(res)) {
         try { App.recordWriting(c.ch, c.mark, { cheat, source: 'word', result: c.result }); } catch (e) { console.error(e); }
@@ -3585,8 +3667,7 @@
       cur.readingMark = correct ? 'o' : 'x';
       ki.setReadOnly(true);
       ki.input.classList.add(correct ? 'is-right' : 'is-wrong');
-      const cheat = !!(cur.cheat || cur.hintCounts);
-      try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: cur.readingMark, cheat }); } catch (e) { console.error(e); }
+      try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: cur.readingMark, cheat: !!cur.cheat, hint: hintRecord() }); } catch (e) { console.error(e); }
       setAsking(false);
       resultBox.textContent = '';
       resultBox.appendChild(typedResult(entry, cur, info, kanjiMode));
@@ -3604,7 +3685,7 @@
       cur.readingMark = 'x';
       cur.answerText = typed ? null : model.text;
       cur.form = typed ? null : model.form;
-      try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: 'x', cheat: !!(cur.cheat || cur.hintCounts) }); } catch (e) { console.error(e); }
+      try { Store.words.recordResult(entry.id, { mode: kanjiMode ? 'kanji' : 'write', mark: 'x', cheat: !!cur.cheat, hint: hintRecord() }); } catch (e) { console.error(e); }
       if (gp) { gp.setEnabled(false); }
       if (ki) ki.setReadOnly(true);
       setAsking(false);

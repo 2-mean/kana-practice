@@ -31,7 +31,9 @@
  *       other devices it IS the live device object). Use it for records / weighting, never pass it back.
  *   KanaStore.flush() → Promise   write everything now (also done on pagehide / tab hidden).
  *   KanaStore.words.list() / get(id) / validate(input) / add(input) / update(id, patch) / remove(id)
- *       / exportJSON() / importJSON(text) / recordResult(id, { mode, mark, cheat, overridden, meaning, part })
+ *       / exportJSON() / importJSON(text) / recordResult(id, { mode, mark, cheat, overridden, meaning, part, hint })
+ *       hint: { used, of } — 단어장 hint steps opened / the steps the mode has (쓰기 / 한자 읽기's reading): the answer is a
+ *       partial miss (SPEC-words N), not a 컨닝 — a hinted ○ counts in stats.hint.<kind>, not as ○.
  *       add/update return the entry, or { error, field, message, bad } (no id) when the input is invalid.
  *       exportJSON words carry `stats` (totals) and `tally` (per device); importJSON joins tallies slot by slot
  *       (re-importing, or importing on a device that already synced part of them, never counts twice) and falls
@@ -44,7 +46,8 @@
  *
  * Entry (as returned): { id, text, kanji, alts?, source?, meaning, reading, note, type:'word'|'sentence', tag, createdAt, updatedAt,
  *          stats: { read:{ok,ng}, write:{o,t,x}, kanji:{ reading:{o,t,x}, meaning:{ok,ng} }, meaning:{ok,ng},
- *                   cheat, overridden, recent:[{ m, g }] (last 8), last } }
+ *                   cheat, overridden, hint:{write,kanji}, hintMiss:{write,kanji} (thousandths of a miss),
+ *                   recent:[{ m, g, h?, hn? }] (last 8; h / hn: hint steps used / available), last } }
  *   updatedAt = last CONTENT edit (add/update/remove). recordResult changes only stats, so practising a stale
  *   copy on another device can never resurrect a deleted word.
  *
@@ -171,6 +174,7 @@
   const KNOWN_CODES = TERMINAL.concat(['invalid_argument', 'transform_error', 'resource_exhausted', 'quota_exceeded', 'unavailable']);
   const MARKS = ['o', 't', 'x'];
   const ENTRY_MODES = ['read', 'write', 'kanji', 'meaning'];
+  const HINT_MAX = 9;           // hint steps of a mode (단어장: 쓰기 2, 한자 읽기 3) — a sanity bound for stored data
 
   const MSG = {
     localOnly: '이 기기에만 저장돼요.',
@@ -256,10 +260,29 @@
 
   function emptyStats() { return { v: 1, chars: {}, confusions: {}, sessions: [] }; }
 
+  // A recent answer → { m, g } (+ h, hn: hint steps used / the steps its mode has, 1 ≤ h ≤ hn ≤ HINT_MAX — 단어장
+  // 쓰기 / 한자 읽기 answers given with hints; anything else about h is dropped, so old data reads as no hints).
   function cleanRecent(arr, modes) {
     if (!Array.isArray(arr)) return [];
     return arr.filter((r) => isObj(r) && MARKS.includes(r.g)).slice(-RECENT_MAX)
-      .map((r) => ({ m: modes.includes(r.m) ? r.m : modes[0], g: r.g }));
+      .map((r) => {
+        const o = { m: modes.includes(r.m) ? r.m : modes[0], g: r.g };
+        const hint = cleanHint(r.h, r.hn);
+        if (hint) { o.h = hint.used; o.hn = hint.of; }
+        return o;
+      });
+  }
+  // { used, of } of a hinted answer, or null (no hints / not a valid pair).
+  function cleanHint(used, of) {
+    const u = Number(used), n = Number(of);
+    if (!Number.isInteger(u) || !Number.isInteger(n) || u < 1 || n < 1 || n > HINT_MAX) return null;
+    return { used: Math.min(u, n), of: n };
+  }
+  // The miss share of a hinted answer, ln(1 + used) / ln(1 + of) (Quiz.hintShare — SPEC-words N).
+  function hintShare(used, of) {
+    const Q = quiz();
+    if (Q && typeof Q.hintShare === 'function') return Q.hintShare(used, of);
+    return used >= 1 && of >= 1 ? Math.log1p(Math.min(used, of)) / Math.log1p(of) : 0;
   }
 
   function fallbackStats(raw) {
@@ -442,10 +465,14 @@
 
   /* ------------------------------------------------------------------ per-word stats (one slot per device) */
 
+  /* hint.{write,kanji}: answers right but with hints (쓰기 / 한자 읽기's reading) — graded (one `recent` push each), not
+   * a ○; hintMiss.{write,kanji}: what the hints added to the misses of that kind, in thousandths (a hinted ○ adds
+   * 1000 · share, a hinted △ 500 · share, a ✕ nothing: SPEC-words N). Old slots without them read 0. */
   const slotTpl = () => ({ read: { ok: 0, ng: 0 }, write: { o: 0, t: 0, x: 0 }, kanji: { reading: { o: 0, t: 0, x: 0 }, meaning: { ok: 0, ng: 0 } },
-    meaning: { ok: 0, ng: 0 }, cheat: 0, overridden: 0 });
+    meaning: { ok: 0, ng: 0 }, cheat: 0, overridden: 0, hint: { write: 0, kanji: 0 }, hintMiss: { write: 0, kanji: 0 } });
   const GRADED = [['read', 'ok'], ['read', 'ng'], ['write', 'o'], ['write', 't'], ['write', 'x'], ['kanji', 'reading', 'o'],
-    ['kanji', 'reading', 't'], ['kanji', 'reading', 'x'], ['kanji', 'meaning', 'ok'], ['kanji', 'meaning', 'ng'], ['meaning', 'ok'], ['meaning', 'ng']];
+    ['kanji', 'reading', 't'], ['kanji', 'reading', 'x'], ['kanji', 'meaning', 'ok'], ['kanji', 'meaning', 'ng'], ['meaning', 'ok'], ['meaning', 'ng'],
+    ['hint', 'write'], ['hint', 'kanji']];
   const pathOf = (o, p) => p.reduce((x, k) => (isObj(x) ? x[k] : 0), o);
   const slotGraded = (s) => GRADED.reduce((n, p) => n + nat(pathOf(s, p)), 0);
 
@@ -1226,15 +1253,30 @@
       const cheat = !!o.cheat && !o.overridden && (mode === 'read' || mode === 'write' || (mode === 'kanji' && part === 'reading'));
       if (cheat) s.cheat++;
       const counts = !(cheat && g === 'o');      // a 컨닝 ○ is not a success (as in Quiz)
-      const push = (m, gg) => { s.recent.push({ m, g: gg }); if (s.recent.length > RECENT_MAX) s.recent.splice(0, s.recent.length - RECENT_MAX); };
+      const push = (m, gg, hh) => {
+        const item = { m, g: gg };
+        if (hh) { item.h = hh.used; item.hn = hh.of; }
+        s.recent.push(item);
+        if (s.recent.length > RECENT_MAX) s.recent.splice(0, s.recent.length - RECENT_MAX);
+      };
       const okng = (x) => (x === 'o' ? 'ok' : 'ng');
       const ox = (x) => (x === 'o' ? 'o' : 'x');
+      // 힌트 (쓰기 / 한자 읽기's reading, SPEC-words N): { used, of } — a hinted answer is a partial miss, not a 컨닝: ○ goes
+      // to hint.<kind> (no ○), and hintMiss.<kind> gets what the hints added (○ 1000 · share, △ 500 · share)
+      const kind = mode === 'write' ? 'write' : mode === 'kanji' && part === 'reading' ? 'kanji' : null;
+      const hint = kind && isObj(o.hint) ? cleanHint(o.hint.used, o.hint.of) : null;
+      const reading = (m, tally) => {
+        if (!counts) return;
+        if (hint && g === 'o' && !cheat) s.hint[kind]++; else tally[g]++;
+        if (hint && g !== 'x') s.hintMiss[kind] = Math.min(COUNTER_MAX, s.hintMiss[kind] + Math.round((g === 'o' ? 1000 : 500) * hintShare(hint.used, hint.of)));
+        push(m, g, hint);
+      };
       if (mode === 'read') { if (counts) { s.read[okng(g)]++; push('read', ox(g)); } }
-      else if (mode === 'write') { if (counts) { s.write[g]++; push('write', g); } }
+      else if (mode === 'write') reading('write', s.write);
       else if (mode === 'meaning') { s.meaning[okng(g)]++; push('meaning', ox(g)); }
       else if (part === 'meaning') { s.kanji.meaning[okng(g)]++; push('meaning', ox(g)); }
       else {
-        if (counts) { s.kanji.reading[g]++; push('kanji', g); }
+        reading('kanji', s.kanji.reading);
         if (o.meaning !== undefined && o.meaning !== null) { const mg = isGood(o.meaning) ? 'o' : 'x'; s.kanji.meaning[okng(mg)]++; push('meaning', mg); }
       }
       s.last = Math.max(now(), s.last + 1);

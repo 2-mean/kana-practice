@@ -557,10 +557,12 @@
    *   Always in a random order.
    *
    * 무한 모드 — a run keeps asking from `pool` until the learner stops:
-   *   run  = endlessStart({ retryTri })                   → { asked, retries, retryStreak, retryTri, retried, retryCount }
-   *          (+ since: { key: question it joined the pool at }, added by the first nextEndless)
+   *   run  = endlessStart({ retryTri, live? })            → { asked, retries, retryStreak, retryTri, retried, retryCount }
+   *          (+ since: { key: question it joined the pool at }, added by the first nextEndless; + live, fair with
+   *          틀린 것 위주 on — its factor follows the run's answers, see liveFocus below)
    *   pick = nextEndless(run, pool, statsOf, rng, opts)   → { key, retry } (key is appended to run.asked)
-   *   endlessRecord(run, key, mark, rng, poolSize)        after the answer is graded ('o' | 't' | 'x')
+   *   endlessRecord(run, key, mark, rng, poolSize, miss?) after the answer is graded ('o' | 't' | 'x'; miss: a hinted
+   *                                                       answer's miss value, null = not one the history counts)
    * opts.pairOf(key) → key that should not come right after it (か then カ).
    *  - fresh pick: the balancing draw above;
    *  - spaced retry: an item answered ✕ (or △ when retryTri — kana writing; 단어장 never retries △) is re-asked
@@ -579,6 +581,7 @@
   const OVERDUE_GAIN = 2;                    // × e^(2 · max(0, wait − 1)), wait in fair periods
   const TWIN_DAMP = 0.2;                     // the other-script twin right after its pair
   const FOCUS_MAX = 6;                       // the '…위주' multipliers of a pool span at most ×6 (focusScale)
+  const WRONG_SPAN = 2;                      // 틀린 것 위주: × (1 + 2 · miss), 1..3
   const DUE_ROOM = 1;                        // dueFirst: a finite test's asks fit before the end, outside the window
   const SHARE_ROOM = 1.25;                   // an item's share ≤ 1 / (1.25 · (window + 1)) (shareCap)
 
@@ -623,8 +626,8 @@
   }
 
   /* The multipliers of a pool as a plain JSON table { key: mult } (1..6) — taken once at the start of a 무한 run so
-   * the run weighs its items by the history from before it (its own answers are the balancing's and the retries'
-   * business), and kept with the run state. */
+   * the run weighs its items by the history from before it, and kept with the run state. With 틀린 것 위주 on the run
+   * carries them live instead (endlessStart({ live: liveFocus(…) }), below): its own answers move that factor. */
   function focusTable(pool, statsOf) {
     const multOf = multGetter(statsOf);
     const out = {};
@@ -675,7 +678,14 @@
    * random. (Drawing every question afresh missed an item in 56 % of 20-question tests over 19 words — and asked
    * another three times; with a ×1 item among ×6 ones, 30 over 10 left it out a third of the time.) → Map key → count */
   function finiteTargets(items, n, shares, r) {
-    const extra = n - items.length;
+    const out = spreadExtra(items, n - items.length, shares, r);
+    for (const k of items) out.set(k, 1 + out.get(k));
+    return out;
+  }
+
+  // `extra` questions shared out by `weights` (Map key → weight, Σ = 1): each item ⌊e⌋ or ⌈e⌉ of e = extra · weight,
+  // by systematic sampling over a shuffled order; the total is exactly extra. → Map key → count
+  function spreadExtra(items, extra, weights, r) {
     let u = r();
     if (!(u > 0 && u < 1)) u = 0.5;
     const below = (x) => Math.min(extra, Math.max(0, Math.ceil(x - u - 1e-9)));   // points u, u + 1, … under x
@@ -683,8 +693,8 @@
     const out = new Map();
     let cum = 0;
     order.forEach((k, i) => {
-      const next = i === order.length - 1 ? extra : cum + extra * shares.get(k);
-      out.set(k, 1 + below(next) - below(cum));
+      const next = i === order.length - 1 ? extra : cum + extra * weights.get(k);
+      out.set(k, below(next) - below(cum));
       cum = next;
     });
     return out;
@@ -704,8 +714,12 @@
     return open;
   }
 
+  // opts: { retryTri, live } — live: liveFocus(pool, statsOf) when 틀린 것 위주 is on (the multipliers then follow the
+  // run's answers; nextEndless ignores its statsOf), else left out (the run's multipliers are the caller's statsOf).
   function endlessStart(opts) {
-    return { asked: [], retries: [], retryStreak: 0, retryTri: !!(opts && opts.retryTri), retried: [], retryCount: 0 };
+    const run = { asked: [], retries: [], retryStreak: 0, retryTri: !!(opts && opts.retryTri), retried: [], retryCount: 0 };
+    if (opts && opts.live && typeof opts.live === 'object') { run.live = opts.live; run.fair = {}; }
+    return run;
   }
 
   /* The last min(5, ⌊size / 2⌋) asked keys: neither a fresh pick nor a retry may repeat one of them. At least half
@@ -768,10 +782,13 @@
     run.asked.forEach((k, i) => { if (i >= (from.get(k) || 0)) count.set(k, (count.get(k) || 0) + 1); last.set(k, i); });
     const alpha = balanceAlpha(size);
     const twin = n > 0 && o.pairOf ? o.pairOf(run.asked[n - 1]) : null;
+    // a live run: the fair amounts accrued question by question (run.fair, accrueFair); else the closed forms
+    const fair = isLive(run) && run.fair && typeof run.fair === 'object' ? run.fair : null;
     const logw = cands.map((k) => {
       const share = shares.get(k);
-      const deficit = (n - from.get(k)) * share - (count.get(k) || 0);
-      const wait = (n - 1 - (last.has(k) ? last.get(k) : -1)) * share;
+      const acc = fair && hasOwn(fair, k) && fair[k] && Number.isFinite(fair[k].o) && Number.isFinite(fair[k].w) ? fair[k] : null;
+      const deficit = (acc ? acc.o : (n - from.get(k)) * share) - (count.get(k) || 0);
+      const wait = acc ? acc.w : (n - 1 - (last.has(k) ? last.get(k) : -1)) * share;
       let v = Math.log(share) + alpha * deficit + OVERDUE_GAIN * Math.max(0, wait - 1);
       if (twin != null && k === twin && cands.length > 1) v += Math.log(TWIN_DAMP);
       return v;
@@ -802,7 +819,8 @@
   function endlessOdds(run, pool, statsOf, opts) {
     const items = uniqueKeys(pool);
     if (!items.length) return {};
-    const { cands, logw } = freshWeights(run, items, fairShares(items, multGetter(statsOf)), opts || {});
+    const multOf = isLive(run) ? liveGetter(run.live, items) : multGetter(statsOf);
+    const { cands, logw } = freshWeights(run, items, fairShares(items, multOf), opts || {});
     const w = fromLog(logw);
     const total = w.reduce((a, b) => a + b, 0);
     const out = {};
@@ -819,6 +837,8 @@
     if (!(run.retryStreak >= 0)) run.retryStreak = 0;
     return run;
   }
+
+  const isLive = (run) => !!run && !!run.live && typeof run.live === 'object' && !Array.isArray(run.live);
 
   function nextEndless(run, pool, statsOf, rng, opts) {
     const r = rng || Math.random;
@@ -844,7 +864,12 @@
         .sort((a, b) => a.due - b.due);
       if (due.length) { key = due[0].key; retry = true; }
     }
-    if (key == null) key = drawFresh(run, items, fairShares(items, multGetter(statsOf)), r, opts || {});
+    // 틀린 것 위주 live (run.live): the multipliers follow the run's own answers, and the balancing counts each item's
+    // fair share question by question (run.fair) — a share that rose is owed from now on, not for the questions before
+    const live = isLive(run);
+    const shares = live ? fairShares(items, liveGetter(run.live, items)) : null;
+    if (key == null) key = drawFresh(run, items, shares || fairShares(items, multGetter(statsOf)), r, opts || {});
+    if (live) accrueFair(run, items, shares, key, n);
     run.asked.push(key);
     run.retries = run.retries.filter((x) => x.key !== key);
     run.retryStreak = retry ? run.retryStreak + 1 : 0;
@@ -855,6 +880,27 @@
     return { key, retry };
   }
 
+  /* A live run, after question n (`key` asked): every item of the pool accrues its share of that question — o: its
+   * fair amount since it joined (the deficit's first term), w: since it was last asked (the wait, in fair periods).
+   * With constant shares these are the closed forms (n − joined) · share and (n − 1 − last) · share; with live shares a
+   * share that rose counts from the question it rose at (no catch-up burst for the questions before). An item new to
+   * run.fair starts from the closed forms at n. */
+  function accrueFair(run, items, shares, key, n) {
+    if (!run.fair || typeof run.fair !== 'object' || Array.isArray(run.fair)) run.fair = {};
+    const fair = run.fair;
+    const inPool = new Set(items.map(String));
+    for (const k of Object.keys(fair)) if (!inPool.has(k)) delete fair[k];
+    for (const k of items) {
+      const s = shares.get(k);
+      let a = hasOwn(fair, k) && fair[k] && typeof fair[k] === 'object' ? fair[k] : null;
+      if (!a || !Number.isFinite(a.o) || !Number.isFinite(a.w)) {
+        a = fair[k] = { o: (n - joinedAt(run, k, n)) * s, w: (n - 1 - run.asked.lastIndexOf(k)) * s };
+      }
+      a.o += s;
+      a.w = k === key ? 0 : a.w + s;
+    }
+  }
+
   // Questions between a miss and its retry: max(5, min(20, round(size / 3))) ± 30 %, never inside the no-repeat window.
   function retryGap(size, r) {
     const mid = Math.max(RETRY_GAP_MIN, Math.min(RETRY_GAP_MAX, Math.round(size / RETRY_GAP_DIV)));
@@ -862,7 +908,11 @@
     return Math.max(1, Math.min(size - 1, Math.max(Math.min(ENDLESS_WINDOW, size - 1), gap)));
   }
 
-  function endlessRecord(run, key, mark, rng, poolSize) {
+  /* After the answer: the spaced retry (✕, or △ with retryTri) and, in a live run (run.live: 틀린 것 위주 on), the item's
+   * miss estimate. miss: the answer's miss value 0..1 (a hinted answer's — answerMiss); undefined → from the mark
+   * (○ 0, △ ½, ✕ 1); null → the estimate is left as it is (an answer the history does not count: 컨닝 ○). */
+  function endlessRecord(run, key, mark, rng, poolSize, miss) {
+    if (isLive(run)) liveRecord(run.live, key, miss === undefined ? answerMiss(mark, 0) : miss);
     const wrong = mark === 'x' || (mark === 't' && run.retryTri);
     const size = poolSize == null ? Infinity : poolSize;
     if (!wrong || size < 2) return run;
@@ -936,21 +986,168 @@
     const factors = (ch) => {
       if (memo.has(ch)) return memo.get(ch);
       const l = (less && less.get(ch)) || 1;
-      const wrong = st.focusWrong ? 1 + 2 * wrongness(stats, ch, mode) : 1;
+      const miss = st.focusWrong ? wrongness(stats, ch, mode) : 0;
+      const wrong = st.focusWrong ? 1 + WRONG_SPAN * miss : 1;
       let look = 1;
       const k = data && data.kana && data.kana[ch];
       if (st.focusConfusable && k && k.confusables && k.confusables.length) {
         look = k.confusables.some((p) => available.has(p)) ? 3 : 1.75;
       }
-      const f = { less: l, wrong, look, p: l * wrong * look };
+      const f = { less: l, wrong, look, miss, p: l * wrong * look };
       memo.set(ch, f);
       return f;
     };
     const scale = st.focusLess || st.focusWrong || st.focusConfusable ? focusScale(keys.map((ch) => factors(ch).p)) : focusMult;
     return (ch) => {
       const f = factors(ch);
-      return { mult: scale(f.p), less: f.less, wrong: f.wrong, look: f.look };
+      const out = { mult: scale(f.p), less: f.less, wrong: f.wrong, look: f.look };
+      if (st.focusWrong) out.miss = f.miss;     // the estimate a live run starts from (liveFocus)
+      return out;
     };
+  }
+
+  /* ---------------------------------------------------------------- 틀린 것 위주, live within a run (SPEC-words A)
+   * With 틀린 것 위주 on, the run's own answers move the weights too (user request: "무한으로 돌릴 때 틀린 것 위주 하면
+   * 그때 틀린 것들도 잘 반영되면서"). Each item keeps a miss estimate 0..1 that starts at its value from the history
+   * (kana wrongness / 단어장 wrongScore) and after each of its answers moves a quarter of the way to the answer's miss
+   * value (an exponential moving average, LIVE_RATE): ○ 0, △ ½, ✕ 1, a hinted answer in between (answerMiss); an
+   * answer the history does not count (컨닝 ○, an ungraded '-') leaves it as it is. Its 틀린 것 위주 factor is
+   * 1 + 2 · estimate as before (1..3), multiplied with the other options' factors (kept from the start of the run)
+   * and made the pool's multiplier by focusScale — at the start exactly the frozen table (focusTable) of before.
+   * One answer moves the factor by at most ×1.5 up (a miss at estimate 0) and ×1.2 down (a ○ at estimate 1); a word
+   * missed every time approaches ×3, one answered right again falls back answer by answer (½ of the way in 2.4).
+   *   live = liveFocus(pool, statsOf)  { key: { less, look, miss } } (plain JSON) — statsOf(key) → { less, look, miss }
+   *                                    (endlessStatsOf / 단어장 endlessStatsFor with 틀린 것 위주 on; missing ×1 / ×1 /
+   *                                    (wrong − 1) / 2)
+   *   liveRecord(live, key, miss)      → whether the estimate moved
+   *   liveMults(live, pool?)           → { key: mult } (1..6), a focusTable-like table
+   * A 무한 run takes `live` in endlessStart({ live }) (nextEndless then ignores its statsOf; endlessRecord updates it);
+   * a finite test with more questions than items keeps it beside its question list (finiteLiveStart) and re-plans the
+   * questions not asked yet after each answer (finiteLiveRecord → finiteReplan). */
+  const LIVE_RATE = 0.25;
+  const unit = (v) => (Number(v) > 0 ? Math.min(1, Number(v)) : 0);
+  const factorOf = (v) => (Number.isFinite(v) && v > 0 ? v : 1);
+
+  // The miss share of a hinted answer (user request: "틀린 거 쪽으로 가중치가 힌트 개수만큼, 로그 함수 느낌으로 초반에
+  // 많이"): ln(1 + used) / ln(1 + of) — of = the hint steps the question's mode has (쓰기 2: 0.63 / 1; 한자 읽기 3:
+  // 0.50 / 0.79 / 1), used = the steps the learner opened (a step the question shows up front — 한국어 + 발음 — is
+  // neither used nor taken off `of`). 0 without hints.
+  function hintShare(used, of) {
+    const H = Math.floor(Number(of)), u = Math.floor(Number(used));
+    if (!(H >= 1) || !(u >= 1)) return 0;
+    return Math.log1p(Math.min(u, H)) / Math.log1p(H);
+  }
+
+  // An answer's miss value 0..1: 1 − (1 − base) · (1 − share) with base ○ 0 · △ ½ · ✕ 1 and share the hint share
+  // (0 without hints) — a hinted ○ is `share` of a miss, a hinted △ that far from ½ towards 1, a ✕ is 1 whatever the
+  // hints. Marks other than ○ △ ✕ → null (not graded).
+  function answerMiss(mark, share) {
+    const base = mark === 'o' ? 0 : mark === 't' ? 0.5 : mark === 'x' ? 1 : null;
+    if (base == null) return null;
+    return 1 - (1 - base) * (1 - unit(share));
+  }
+
+  function liveFocus(pool, statsOf) {
+    const get = typeof statsOf === 'function' ? statsOf
+      : statsOf && typeof statsOf === 'object' ? (k) => (hasOwn(statsOf, k) ? statsOf[k] : null) : () => null;
+    const out = {};
+    for (const k of uniqueKeys(pool)) {
+      const s = get(k);
+      const o = s && typeof s === 'object' ? s : {};
+      const miss = Number.isFinite(o.miss) ? o.miss : Number.isFinite(o.wrong) ? (o.wrong - 1) / WRONG_SPAN : 0;
+      out[k] = { less: factorOf(o.less), look: factorOf(o.look), miss: unit(miss) };
+    }
+    return out;
+  }
+
+  function liveRecord(live, key, miss) {
+    if (!live || typeof live !== 'object' || miss == null || !hasOwn(live, key)) return false;
+    const e = live[key];
+    const v = Number(miss);
+    if (!e || typeof e !== 'object' || !Number.isFinite(v)) return false;
+    const m = unit(e.miss);
+    const next = m + LIVE_RATE * (unit(v) - m);
+    e.miss = next;
+    return next !== m;
+  }
+
+  // key → mult of the live table over `items` (an item missing from it: ×1 and no misses): the products
+  // less · (1 + 2 · miss) · look made multipliers for the pool by focusScale, as endlessStatsOf / endlessStatsFor do.
+  function liveGetter(live, items) {
+    const prod = new Map();
+    for (const k of items) {
+      const e = live && hasOwn(live, k) && live[k] && typeof live[k] === 'object' ? live[k] : {};
+      prod.set(k, factorOf(e.less) * (1 + WRONG_SPAN * unit(e.miss)) * factorOf(e.look));
+    }
+    const scale = focusScale(Array.from(prod.values()));
+    return (k) => focusMult(scale(prod.has(k) ? prod.get(k) : 1));
+  }
+
+  function liveMults(live, pool) {
+    const items = uniqueKeys(pool || Object.keys(live || {}));
+    const multOf = liveGetter(live, items);
+    const out = {};
+    for (const k of items) out[k] = multOf(k);
+    return out;
+  }
+
+  /* A finite test of n > poolSize questions with 틀린 것 위주 on: its live state (plain JSON) — the test's question list
+   * is pickFinite's as before; after each answer finiteLiveRecord moves the item's estimate and, when it moved,
+   * returns the questions not asked yet re-planned (finiteReplan) → [key] (the list's tail), else null (keep it). */
+  function finiteLiveStart(pool, n, statsOf) {
+    const keys = uniqueKeys(pool);
+    return { n: Math.max(0, Math.floor(Number(n) || 0)), pool: keys, live: liveFocus(keys, statsOf) };
+  }
+  function finiteLiveRecord(state, asked, key, mark, rng, opts, miss) {
+    if (!state || typeof state !== 'object' || !state.live) return null;
+    if (!liveRecord(state.live, key, miss === undefined ? answerMiss(mark, 0) : miss)) return null;
+    return finiteReplan(asked, state.pool, state.n, liveMults(state.live, state.pool), rng, opts);
+  }
+
+  /* The rest of a finite test (n questions, `asked` so far) re-planned for the current multipliers → [key]
+   * (n − asked.length keys). Every item not asked yet still comes once; the other questions go to the items short of
+   * their fair amount of the whole test — n · share − asked so far, ≥ 0 — shared out like finiteTargets (each ⌊e⌋ or
+   * ⌈e⌉), ordered by the balancing draw continuing after `asked` (dueFirst, the window, opts.pairOf). */
+  function finiteReplan(asked, pool, n, statsOf, rng, opts) {
+    const r = rng || Math.random;
+    const items = uniqueKeys(pool);
+    const done = Array.isArray(asked) ? asked.slice() : [];
+    const total = Math.floor(Number(n));
+    const rest = total - done.length;
+    if (!items.length || !(rest > 0)) return [];
+    const count = new Map(items.map((k) => [k, 0]));
+    for (const k of done) if (count.has(k)) count.set(k, count.get(k) + 1);
+    let unasked = items.filter((k) => !count.get(k));
+    if (unasked.length > rest) unasked = shuffle(unasked, r).slice(0, rest);
+    const base = new Set(unasked);
+    const shares = fairShares(items, multGetter(statsOf));
+    const want = new Map(items.map((k) => [k, Math.max(0, total * shares.get(k) - count.get(k) - (base.has(k) ? 1 : 0))]));
+    let sum = 0;
+    for (const v of want.values()) sum += v;
+    const weights = new Map(items.map((k) => [k, sum > 0 ? want.get(k) / sum : shares.get(k)]));
+    const left = spreadExtra(items, rest - base.size, weights, r);
+    for (const k of base) left.set(k, left.get(k) + 1);
+    const plan = new Map(items.map((k) => [k, Math.max(1, count.get(k) + left.get(k)) / total]));
+    const run = endlessStart();
+    run.asked = done.slice();
+    const win = windowSize(items.length);
+    for (let i = done.length; i < total; i++) {
+      const k = drawFresh(run, items, plan, r, opts || {}, dueFirst(items, left, i, total, win));
+      left.set(k, left.get(k) - 1);
+      run.asked.push(k);
+    }
+    return run.asked.slice(done.length);
+  }
+
+  /* Kana: the live state of a finite test with 틀린 글자 위주 on and more questions than chars (buildPool's
+   * pickFinite plan), else null. */
+  function finiteLiveFor(settings, data, stats, mode, now) {
+    const st = settings || {};
+    if (!st.focusWrong || st.count === 'endless') return null;
+    const chars = charsFor(st, data);
+    const n = questionCount(st, chars.length);
+    if (!(n > chars.length)) return null;
+    return finiteLiveStart(chars, n, endlessStatsOf(stats, mode, st, data, chars, now));
   }
 
   return {
@@ -964,5 +1161,7 @@
     charMastery, topConfusions, orderTrouble, hasHistory,
     endlessStart, nextEndless, endlessRecord, endlessStatsOf, endlessOdds,
     pickFinite, focusTable, focusMult, focusScale, lessMultipliers, balanceAlpha,
+    hintShare, answerMiss, liveFocus, liveRecord, liveMults, finiteLiveStart, finiteLiveRecord, finiteReplan, finiteLiveFor,
+    LIVE_RATE,
   };
 });

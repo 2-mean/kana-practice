@@ -1132,7 +1132,10 @@
 
   /* ================================================================ test lifecycle
    * state.test = { mode, script, active, retry, label, questions: [{ ch, script, font, retry? }], index, answers, cur,
-   *                endless: null | { run, pool, mult } }   — 무한 모드 appends one question at a time (Q.nextEndless). */
+   *                endless: null | { run, pool, mult }, finite: null | Q.finiteLiveFor state }
+   *   — 무한 모드 appends one question at a time (Q.nextEndless). With 틀린 글자 위주 on the weights are live (SPEC-words A):
+   *   a 무한 run carries them (run.live), a finite test with more questions than chars re-plans the questions not asked
+   *   yet after each answer (t.finite, Q.finiteLiveRecord). */
 
   function makeQuestion(q) {
     const pref = state.settings.readFont;
@@ -1152,14 +1155,18 @@
     let endlessRun = null;
     if (endless) {
       const all = Q.charsFor(st, D);
-      // the '…위주' multipliers come from the history before the run (SPEC-words A): taken once, kept with the run
+      // the '…위주' multipliers come from the history before the run (SPEC-words A), kept with the run — with 틀린 글자
+      // 위주 on, live: the run's own answers move them (misses up, right answers down)
       if (all.length) {
-        const mult = Q.focusTable(all, Q.endlessStatsOf(viewStats(), mode, st, D, all));
-        endlessRun = { run: Q.endlessStart({ retryTri: mode === 'write' }), pool: all, mult };
+        const statsOf = Q.endlessStatsOf(viewStats(), mode, st, D, all);
+        const mult = Q.focusTable(all, statsOf);
+        const live = st.focusWrong ? Q.liveFocus(all, statsOf) : null;
+        endlessRun = { run: Q.endlessStart(live ? { retryTri: mode === 'write', live } : { retryTri: mode === 'write' }), pool: all, mult };
       }
     } else {
       pool = chars ? Q.poolFromChars(chars, D, Math.random) : Q.buildPool(st, D, viewStats(), Math.random, mode);
     }
+    const finite = !chars && !endless && pool.length ? Q.finiteLiveFor(st, D, viewStats(), mode) : null;
     if (!pool.length && !endlessRun) { toast('선택한 글자가 없어요. 범위를 골라 주세요.'); return; }
     let script = st.script;
     if (chars) {
@@ -1167,7 +1174,7 @@
       script = scripts.size > 1 ? 'mix' : pool[0].script;
     }
     const t = {
-      mode, script, active: true, retry: !!chars, label: (meta && meta.label) || null, endless: endlessRun,
+      mode, script, active: true, retry: !!chars, label: (meta && meta.label) || null, endless: endlessRun, finite,
       questions: pool.map(makeQuestion), index: 0, answers: [], cur: null,
     };
     if (endlessRun) t.questions.push(nextEndlessQuestion(t));
@@ -1180,10 +1187,19 @@
   }
 
   // A graded answer of the running test (무한 모드: a ✕ — or △ in writing — is scheduled for a spaced retry, once per
-  // char per run and within 15 % of the questions; SPEC-words A).
+  // char per run and within 15 % of the questions; SPEC-words A). With 틀린 글자 위주 the answer also moves the live
+  // weights — a 컨닝 ○ does not (it is no answer in the history either) — and a finite test re-plans the questions
+  // after the current one.
   function addAnswer(t, answer) {
     t.answers.push(answer);
-    if (t.endless) Q.endlessRecord(t.endless.run, answer.ch, answer.mark, Math.random, t.endless.pool.length);
+    const miss = answer.cheat && answer.mark === 'o' ? null : undefined;
+    if (t.endless) Q.endlessRecord(t.endless.run, answer.ch, answer.mark, Math.random, t.endless.pool.length, miss);
+    else if (t.finite) {
+      const head = t.questions.slice(0, t.index + 1);
+      const tail = Q.finiteLiveRecord(t.finite, head.map((q) => q.ch), answer.ch, answer.mark, Math.random,
+        { pairOf: (c) => (D.kana[c] ? D.kana[c].pair : null) }, miss);
+      if (tail) t.questions = head.concat(tail.map((ch) => makeQuestion({ ch, script: D.kana[ch].script })));
+    }
   }
 
   // Move to the next question; false when a finite test is over.
