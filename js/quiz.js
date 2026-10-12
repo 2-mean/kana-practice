@@ -471,13 +471,15 @@
     };
   }
 
-  // Most-confused pairs (direction-merged): [{ a, b, count, ab, ba }] sorted by count.
-  function topConfusions(stats, n) {
+  // Most-confused pairs (direction-merged): [{ a, b, count, ab, ba }] sorted by count. With data (KANA_DATA), pairs that are
+  // drawn the same (data.sameShape: へ/ヘ, り/リ) are left out — counts recorded before り/リ became twins are no mix-up.
+  function topConfusions(stats, n, data) {
     const pairs = new Map();
+    const same = (a, b) => !!data && (data.sameShape || []).some((p) => p.includes(a) && p.includes(b));
     for (const key of Object.keys((stats && stats.confusions) || {})) {
       const [a, b] = Array.from(key.split('>'));
       const cnt = stats.confusions[key];
-      if (!a || !b || !cnt) continue;
+      if (!a || !b || !cnt || same(a, b)) continue;
       const id = a < b ? a + '|' + b : b + '|' + a;
       const e = pairs.get(id) || { a: a < b ? a : b, b: a < b ? b : a, count: 0, ab: 0, ba: 0 };
       e.count += cnt;

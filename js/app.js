@@ -1657,7 +1657,8 @@
   function confusedOf(result, ch) {
     if (!result) return null;
     const k = D.kana[ch];
-    return result.confusedWith || (result.crossScript ? (result.recognized || (k ? k.pair : null)) : null);
+    const c = result.confusedWith || (result.crossScript ? (result.recognized || (k ? k.pair : null)) : null);
+    return c && !(D.sameShape || []).some((p) => p.includes(c) && p.includes(ch)) ? c : null; // (り/リ: drawing either is right)
   }
 
   /* ================================================================ graded-drawing detail (shared component)
@@ -1931,6 +1932,7 @@
       confusedWith: r ? r.confusedWith || null : null,
       crossScript: !!(r && r.crossScript),
       issues: r && Array.isArray(r.issues) ? r.issues.map((it) => ({ type: String(it.type), message: String(it.message) })) : [],
+      notes: r && Array.isArray(r.notes) ? r.notes.map((it) => ({ type: String(it.type), message: String(it.message) })) : [],
       keypointsFailed: kp && Array.isArray(kp.failed) ? kp.failed.slice() : null,
       candidates: r && Array.isArray(r.candidates)
         ? r.candidates.slice(0, 5).map((c) => ({ ch: c.ch, variantId: c.variantId || null, score: Number.isFinite(c.score) ? Math.round(c.score * 1e4) / 1e4 : null })) : [],
@@ -2045,6 +2047,11 @@
       h('li', { class: 'issue issue-' + it.type }, h('span', { class: 'issue-type' }, ISSUE_LABEL[it.type] || '참고'), h('span', { class: 'issue-msg' }, richText(it.message)))) : [];
     const kpLine = kpIssue(kpv, mark);
     if (kpLine) issueItems.push(kpLine);
+    // gentle notes of the recognizer (result.notes, additive: り / リ drawn like the other script's form) — information only,
+    // the grade stays
+    if (r && Array.isArray(r.notes) && mark !== 'x') for (const n of r.notes) {
+      if (n && n.message) issueItems.push(h('li', { class: 'issue issue-note' }, h('span', { class: 'issue-type' }, '참고'), h('span', { class: 'issue-msg' }, richText(String(n.message)))));
+    }
     if (issueItems.length) panel.appendChild(h('ul', { class: 'issues' }, issueItems));
     let kpShown = false; // the glyph with the rings went into the look-alike comparison
     const kpTarget = (other) => {
@@ -2401,7 +2408,8 @@
         kpSec,
         lookGroups.length || sameShape ? h('section', { class: 'detail-sec' },
           h('h3', { class: 'sec-h' }, '닮은 글자'),
-          sameShape ? h('p', { class: 'sec-note' }, jp(sameShape[0]), '와 ', jp(sameShape[1]), '는 모양이 같아서 쓰기에서는 둘 다 정답이에요.') : null,
+          sameShape ? h('p', { class: 'sec-note' }, jp(sameShape[0]), '와 ', jp(sameShape[1]), k.twinNote
+            ? '는 손글씨로는 모양이 거의 같아서 쓰기에서는 둘 다 정답이에요.' : '는 모양이 같아서 쓰기에서는 둘 다 정답이에요.') : null,
           lookGroups.map((g) => h('div', { class: 'look-group' },
             h('div', { class: 'look-chars' }, g.chars.map((c) => {
               const kc = D.kana[c];
@@ -2604,7 +2612,7 @@
       gridBox.appendChild(kanaTable(Q.DAKUTEN_ROWS.concat(Q.HANDAKUTEN_ROWS), view, masteryCell, '탁음·반탁음 숙련도'));
     }
 
-    const confusions = Q.topConfusions(stats, 8);
+    const confusions = Q.topConfusions(stats, 8, D);
     const trouble = Q.orderTrouble(stats, 24);
     const sessions = stats.sessions.slice().reverse().slice(0, 12);
     const any = Q.hasHistory(stats) || stats.sessions.length > 0;

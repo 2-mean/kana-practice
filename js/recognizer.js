@@ -24,6 +24,9 @@
  *                hit }],                // true | false | null (not judged: the stroke is not in the drawing, or the
  *                                       //   drawing was matched with a same-shape / small-big twin's form)
  *     failed: [ids] }                   // the points with hit === false (critical: on a look-alike's side)
+ *   result.notes (additive, always an array): [{ type: 'twin', message }] when a drawing of り / リ looked like the other
+ *   script's form (り: and its left stroke has no clear flick, which the note asks for; accepted all the same: verdict,
+ *   issues and grade never change; KANA_DATA kana[ch].twinNote), else [].
  *   A drawing whose shape was accepted but that misses a critical point where a look-alike explains it better →
  *   verdict 'wrong', recognized = confusedWith = that look-alike (crossScript when it is the other-script pair),
  *   variantId null, reversed / orderErrors / structure.misplaced empty, issues [{ type: 'keypoint', message:
@@ -67,16 +70,21 @@
  *   - Pair rules (ク←ワ, り←い, ヤ←セ; section "Pair rules"): where the checkpoints did not vote, a learnt linear vote
  *     on two named measures per pair (KP-B's feature library and thresholds, kept only where it added dev rejections
  *     of rough look-alikes without a new false rejection on any dev split); its measures are public points too.
- *   - Discriminants (ろ←る, ユ←コ, し←レ, り←い, ア←マ, ク←ワ, メ←ヌ, ヤ←セ, モ←も, リ←り, レ←し; PR_RULES entries with
+ *   - Discriminants (ろ←る, ユ←コ, し←レ, り←い, い←り, ア←マ, ク←ワ, メ←ヌ, ヤ←セ, モ←も, レ←し; PR_RULES entries with
  *     all: true): the difference a reader looks at, made decisive — how far ろ's bowl turns after its corner and where it
  *     ends (る curls on into a loop), ユ's short top over a long base that runs out on both sides of the vertical (コ: as
  *     wide as its top, stopping at the vertical), し's round bottom and low end (レ: a corner and a high end), り's long
  *     second stroke close to the first (い: short and apart) … — as one calibrated linear vote with the shape costs' gap;
  *     one public point and one message each.
  *   - Mutual consistency (prVeto): look-alike C is not named over the target T — by the shape match, the checkpoints or
- *     T's rules — when C's own discriminant against T votes T on the drawing (り with a short left stroke that keeps its
- *     hook is not リ; a sharp-cornered レ with a lowish end is not し): such drawings were turned down both as T and as C.
- *     (A wider veto by C's checkpoints was tried and left out: it let ご for ゴ and 25 % morphs through on dev.)
+ *     T's rules — when C's own discriminant against T votes T on the drawing (a sharp-cornered レ with a lowish end is not
+ *     し): such drawings were turned down both as T and as C. (A wider veto by C's checkpoints was tried and left out: it
+ *     let ご for ゴ and 25 % morphs through on dev.)
+ *   - Proportion pairs (bandBlocks; い / り): the asked character gets the benefit of the doubt — C is named over T (by
+ *     the shape match, the checkpoints or T's rules) only when C fits clearly better (BAND_GAP) or T's own discriminant
+ *     against C finds the drawing C-like (BAND.TH × its th) and the drawing shows C's defining proportions (BAND_DEF: り
+ *     for an asked い only with the right stroke clearly taller than the left or reaching clearly below it); an ambiguous
+ *     drawing between the two is the asked character.
  *   - Labels: a label that would read the same as the look-alike's own point against this character (the chart shows
  *     both) says more — where a stroke goes after a bend, which way an end goes, a start / end against the look-alike.
  *
@@ -141,6 +149,30 @@
  *   the other pairs were left out because they cost a correct drawing on dev or gained nothing). Also changed
  *   from KP-A: keypoints.ch is always the target (a twin's form → the target's points, unjudged), and failed lists
  *   exactly the points with hit === false.
+ *   Natural い / り / リ (user report, stylus: correct り, リ and い rejected too often — り read as リ without a strong flick,
+ *   リ as り with a small one, the connected one-stroke り as "1번째 획이 빠졌어요", い / り as each other at the edge of their
+ *   proportions; measured with tools/bench/natural, its v1 split used as dev; calibration scripts in tools/bench/natural/fix,
+ *   on dev, private calibration drawings and the API test's distortion model, never test): り / リ became same-shape twins in
+ *   KANA_DATA (like へ / ヘ: either is right in writing, with a gentle twin note instead of ✕; the リ←り discriminant left with
+ *   it, and rules against a twin never vote); an い←り discriminant (th = the 99.8th percentile of い's own drawings) and
+ *   い / り as a proportion pair (bandBlocks: the り←い pair rule, whose 1.ey spread of 0.03 voted い for natural り, now votes
+ *   only where り's discriminant agrees); り written in one stroke keeps its joined form when the stroke has all three parts
+ *   (joinedRun, JOIN_RUN); a count point names a look-alike's joined form as such ('い는 2획 (り를 이어 쓰면 1획)'). Natural set
+ *   as the app calls it, v1: り false rejections core / combo / connected / edge 9.1 / 23.0 / 13.8 / 1.9 % → 0.3 / 0.0 /
+ *   0.1 / 0.6 %, リ 8.0 / 23.0 → 0 / 0 %, い 0.2 / 1.5 / edge 11.5 % → 0.0 / 0.5 / 4.0 % (held-out split 'test', run once:
+ *   り 0.1 / 0.3 / 0.3 / 0.7 %, リ 0 / 0 %, い 0.1 / 0.3 / 5.3 %); clear い↔り look-alikes 100 % ✕ in every context (lenient
+ *   included). Dev: SCORE 99.82 and correct drawings 99.8 % unchanged, rough look-alikes accepted 0.2 % unchanged, 25 %
+ *   morphs 1.3 → 1.1 %; private い / り rough calibration drawings: targets ✕ 107 → 31 of 1600, look-alikes accepted 11 →
+ *   14 of 1000. Test (run once): SCORE 99.54, rough look-alikes 0.3 %, box 99.71 % — as before. A single-script leniency
+ *   (opts.script) was tried and left out: on dev and private sets it accepted no more correct drawings but let more
+ *   cross-script look-alikes through.
+ *   Adversarial verification (own い / り / リ shapes and seeds, scratch; tools/test-recognizer-api.js 'い / り / リ
+ *   verification'): い with a right stroke about as long as the left and drawn upright was still read as り by the い←り
+ *   discriminant (core い 4.4 %, right stroke 0.85–1 × the left 45 % ✕) → BAND_DEF (0.6 % / 15 %; natural v1 い edge 4.0 →
+ *   3.8 %; dev, box and rough-dev per pair unchanged, private m25 い←り morphs 21 → 25 of 504); い drawn for リ with a
+ *   katakana-only pool was accepted as り's form → closeSet adds a twin's look-alikes; り's twin note told a り with a clear
+ *   flick to flick (57 % of the verifier's natural り, a textbook-like り half the time) → TWIN_FLICK (no-flick り 87 %,
+ *   medium / long flick 3 % / 0 %).
  *
  * How it works
  *  1. Normalisation. User and template strokes are mapped to a common frame (bounding-box centre at the
@@ -169,7 +201,8 @@
  *     errors it needs: a look-alike written properly beats the target written wrongly, while a clear target
  *     with a reversed stroke stays △). Accepted → ○, or △ when the alignment needed an order error, a
  *     reversed long stroke (marks and dots are never direction-judged), a merge / split / retrace or stray
- *     specks — unless a reading with a stroke left out fits clearly better (✕, "원래 N번째 획이 빠졌어요").
+ *     specks — unless a reading with a stroke left out fits clearly better (✕, "원래 N번째 획이 빠졌어요"; not for り
+ *     written in one stroke when the stroke has the left part, the way up and the right stroke: joinedRun).
  *     Rejected → ✕ with what was written instead (confusedWith / crossScript / ゛゜ / same-sound explanation).
  *
  * Pure, deterministic, synchronous, zero dependencies besides SvgPath and KANA_DATA. Templates are
@@ -280,6 +313,15 @@
                          // strokes fit better than the form's by more than this (mean weighted stroke distance) …
     MISS_INK: 0.05,      // … unless it is where the longer form splits a standard form's stroke (そ) and this fraction of it, away from the joint, has drawn ink within MISS_INK_R
     MISS_INK_R: 0.08,
+    TWIN_NOTE: 0.01,     // a near same-shape twin's form (リ for り) fitting the drawing this much better than the target's own: a note
+                         // (natural り: 2 % of drawings, without the flick 56 %; plain リ for り 100 %: tools/bench/natural/fix)
+    TWIN_FLICK: 0.06,    // … for り only when its left stroke has no clear flick: the pen rises less than this × the stroke's height
+                         // after its lowest point (flickRise; drawn without a flick ≤ 0.02, a medium / long flick ≥ 0.1 typically)
+    JOIN_RUN: 0.15,      // … and a one-stroke drawing of a character written in one stroke (り) keeps that form when the stroke runs
+                         // along the first joined stroke's chord, then the connector, then the second stroke's chord, each by at
+                         // least this × its length (connected り ≥ 0.22, a stroke of り alone ≤ 0.04: tools/bench/natural/fix)
+    JOIN_MIN: 0.2,       // joined forms: the connector is at least this long …
+    JOIN_BACK: -0.5,     // … and turns back (cos between it and the second stroke's chord ≤ this; ふ's dot → middle stroke does not)
   };
 
   // Box mode (opts.box = the 원고지 cell; docs/SPEC-words.md D): where and how big the drawing is, in fractions of
@@ -636,7 +678,8 @@
   }
   buildTemplates();
 
-  // Same-shape twins (へ/ヘ …): drawing one counts as the other.
+  // Same-shape twins (へ/ヘ, り/リ …): drawing one counts as the other. A near twin (り/リ: KANA_DATA twinNote) whose form
+  // fits a drawing clearly better than the target's own gets result.notes (a gentle note, never an issue).
   const TWINS = new Map();
   for (const ch of BOX_CHARS) TWINS.set(ch, new Set([ch]));
   for (const g of DATA.sameShape || []) for (const a of g) for (const b of g) if (TWINS.has(a)) TWINS.get(a).add(b);
@@ -1397,7 +1440,7 @@
       verdict: 'wrong', target, recognized: null, variantId: null, confusedWith: null, crossScript: false,
       strokeCount: { expected: k ? k.strokeCount : 0, got }, mapping: [], reversed: [], orderErrors: [],
       structure: { merged: [], split: [], extra: [], specks: [], missing: [], misplaced: [] },
-      issues: [], candidates: [], score: 1, keypoints: null,
+      issues: [], notes: [], candidates: [], score: 1, keypoints: null,
     };
   }
 
@@ -1467,6 +1510,9 @@
   function closeSet(target, sized) {
     const k = info(target), twins = sized ? twinsOf(target, true) : TWINS.get(target);
     const close = new Set([...k.confusables, k.pair]);
+    // a same-shape twin's look-alikes are the target's too: the twin's form counts as the target (り's い for リ), so a
+    // restricted pool must still compare them (with opts.pool = the katakana, い drawn for リ was accepted as り's form)
+    for (const t of TWINS.get(target) || []) if (t !== target && info(t)) for (const c of info(t).confusables || []) close.add(c);
     if (k.base) close.add(k.base);
     for (const ch of sized ? BOX_CHARS : ALL_CHARS) {
       const b = info(ch).base;
@@ -1567,6 +1613,11 @@
       if (!best || mm < best.mm) best = { mm, al };
     }
     if (!best || !(best.mm - fitMean(form) < P.MISS_READ)) return null;
+    // り written in one stroke (the left stroke, a rising connector, the right stroke) is not its two-stroke form short of a
+    // stroke when the drawn stroke has all three parts (tools/bench/natural: connected り with a short left part, a low join
+    // or a rounded top read as "1번째 획이 빠졌어요"). One stroke only: with more, the other strokes hold the registration
+    // and さ / き without their last stroke do run a little along their connectors.
+    if (U.n === 1 && form.T.n === 1 && best.al.T.n === 2 && best.al.missing.length === 1 && joinedRun(U, form) >= P.JOIN_RUN) return null;
     // そ / ぞ written in their textbook one-stroke (standard) form with a short lead-in are not their two-stroke form short
     // of its first stroke: when the "left out" stroke is where the longer form splits the chosen standard form's stroke
     // (it continues into the next stroke), and the drawing has some ink on it, the standard form stands
@@ -1578,6 +1629,66 @@
       if (at && inkOn(best.al, j, at) >= P.MISS_INK) return null;
     }
     return best.al;
+  }
+  // The stroke whose flick (はね) a near twin's note is about (り: its left stroke; リ writes it without one), and how far
+  // the pen rises after the lowest point of the drawn stroke an alignment matched to template stroke j (in its last 60 %),
+  // × the stroke's height; NaN without a one-to-one match.
+  const TWIN_FLICK = { 'り': 0 };
+  function flickRise(U, al, j) {
+    const st = al.steps.find((x) => x.type === 'match' && x.t[0] === j);
+    if (!st || U.pts[st.u[0]].length < 2) return NaN;
+    const p = resample(st.rev < st.fwd ? U.pts[st.u[0]].slice().reverse() : U.pts[st.u[0]], 40);
+    let y0 = Infinity, y1 = -Infinity;
+    for (const q of p) { if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
+    let lo = Math.floor(0.4 * p.length);
+    for (let i = lo; i < p.length; i++) if (p[i][1] > p[lo][1]) lo = i;
+    let top = p[lo][1];
+    for (let i = lo; i < p.length; i++) if (p[i][1] < top) top = p[i][1];
+    return (p[lo][1] - top) / Math.max(y1 - y0, 1e-6);
+  }
+  // A joined form (a variant with one stroke fewer than the standard form, two of whose strokes it writes as one, joined by
+  // a straight connector): { k: that stroke of the form, a / b: the unit chords of the two joined strokes of the standard
+  // form, v: the connector's unit vector (the end of the first → the start of the second), La / Lb / L: their lengths } in
+  // the standard template's frame (the same frame: the connector lies inside the glyph), or null (also for a connector
+  // shorter than JOIN_MIN or one that does not turn back, JOIN_BACK).
+  function joinOf(T) {
+    if (T.join !== undefined) return T.join;
+    T.join = null;
+    const S = T.variantId === 'std' ? null : (BY_CHAR.get(T.ch) || []).find((t) => t.variantId === 'std');
+    if (S && S.n === T.n + 1) {
+      let k = 0;
+      while (k < T.n - 1 && Math.abs(T.len[k] - S.len[k]) < 0.02) k++;
+      const unit = (p, q) => { const L = Math.hypot(q[0] - p[0], q[1] - p[1]); return { u: L > 0 ? [(q[0] - p[0]) / L, (q[1] - p[1]) / L] : [0, 0], L }; };
+      const A = S.pts[k], Bs = S.pts[k + 1];
+      const ca = unit(A[0], A[A.length - 1]), cv = unit(A[A.length - 1], Bs[0]), cb = unit(Bs[0], Bs[Bs.length - 1]);
+      if (cv.L >= P.JOIN_MIN && ca.L > 0 && cb.L > 0 && cv.u[0] * cb.u[0] + cv.u[1] * cb.u[1] <= P.JOIN_BACK) T.join = { k, a: ca.u, La: ca.L, v: cv.u, L: cv.L, b: cb.u, Lb: cb.L };
+    }
+    return T.join;
+  }
+  // Does the drawn stroke that an alignment matched to a joined form's joined stroke write both strokes and the way from
+  // one to the other: a run along the first stroke's chord, then along the connector, then along the second stroke's
+  // chord, in that order? → the least of the three runs, each × its template length (best over the stroke, drawn in the
+  // template's direction); 0 without a joined stroke. A stroke of り alone lacks one of the three (the left one with its
+  // flick has nothing long after it; the right one alone no way up to it).
+  function joinedRun(U, al) {
+    const J = joinOf(al.T);
+    const st = J ? al.steps.find((x) => x.type === 'match' && x.t[0] === J.k) : null;
+    if (!st) return 0;
+    const raw = st.rev < st.fwd ? U.pts[st.u[0]].slice().reverse() : U.pts[st.u[0]];
+    const pts = raw.length > 1 ? resample(raw, 48) : raw, n = pts.length;
+    const proj = (d) => pts.map((p) => p[0] * d[0] + p[1] * d[1]);
+    // best[i] = the best min-run of the phases so far ending at point i; each phase extends it from an earlier point
+    let best = new Array(n).fill(Infinity);
+    for (const [d, L] of [[J.a, J.La], [J.v, J.L], [J.b, J.Lb]]) {
+      const x = proj(d), next = new Array(n).fill(0);
+      for (let i = 0; i < n; i++) for (let h = 0; h <= i; h++) {
+        const v = Math.min(best[h], (x[i] - x[h]) / L);
+        if (v > next[i]) next[i] = v;
+      }
+      for (let i = 1; i < n; i++) if (next[i - 1] > next[i]) next[i] = next[i - 1]; // a phase may end before point i
+      best = next;
+    }
+    return best[n - 1];
   }
   // How much of template stroke j has drawn ink on it (registered drawing al.U): the fraction of its points with a
   // drawn point within MISS_INK_R (points next to `joint`, where it meets the next stroke, left out).
@@ -2452,8 +2563,10 @@
       if (done.has(r.ch) || r.n === T.n || r.extraC.length || r.missingT.length || !r.structAt.length || leadText(T.ch, r.ch)) continue;
       done.add(r.ch);
       const at = [Math.max(-0.5, Math.min(0.5, r.structAt[0][0])), Math.max(-0.5, Math.min(0.5, r.structAt[0][1]))];
+      // (when another form of C has T's count — り in two strokes against い — the count is that of C's joined / split form)
+      const how = countsOf(r.ch).includes(T.n) ? josa(r.ch, '를', '을') + (r.n < T.n ? ' 이어 쓰면 ' : ' 떼어 쓰면 ') : josa(r.ch, '는', '은') + ' ';
       const pt = Object.assign({ id: 'count-' + r.ch, stroke: nearestStroke(T, at) }, box1(at), {
-        kind: 'count', label: T.ch + josa(T.ch, '는', '은') + ' ' + T.n + '획 (' + r.ch + josa(r.ch, '는', '은') + ' ' + r.n + '획)', critical: true, against: [r.ch] });
+        kind: 'count', label: T.ch + josa(T.ch, '는', '은') + ' ' + T.n + '획 (' + r.ch + how + r.n + '획)', critical: true, against: [r.ch] });
       if (ev) {
         pt.hit = !(countsOf(r.ch).includes(ev.n) && !countsOf(T.ch).includes(ev.n));
         if (!pt.hit) failed.push(pt.id);
@@ -2881,11 +2994,18 @@
       pts: [{ kind: 'start', j: 0, t: 0, label: '1번째 획의 시작 위치(위)', text: '1번째 획은 더 오른쪽에서 시작해요' },
         { kind: 'feature', j: 1, t: 0.12, label: '2번째 획의 짧은 가로 부분', text: '2번째 획은 가로로 짧게 긋고 꺾어서 왼쪽 아래로 길게 내려요' }] },
       { c: 'ワ', all: true, f: ['0.sx','0.dx','0.dy','gap'], m: [-0.0482,-0.2611,0.4173,0.0676], s: [0.1124,0.1249,0.1176,0.0204], w: [-0.29,0.065,-0.001,-0.644], z: [-3.02,2.27,0.04,-4.05], bz: [-1.51,1.14,0.02,-2.03], th: 2.32, g: 0.08, pt: { kind: 'start', j: 0, t: 0, label: '1번째 획의 시작 위치(위)', text: '1번째 획은 위쪽 가운데에서 시작해 왼쪽 아래로 짧게 비스듬히 그어요(ワ는 왼쪽에서 세로로 내려요)' } }],
+    // (KP-B's pair rule り←い on 0-1.dmx and 1.ey: 1.ey's spread is 0.03, so a right stroke ending a little above the bottom of
+    // the drawing votes い — natural り with a long left stroke or a medium right one (tools/bench/natural); since い / り became
+    // a proportion pair it votes only where り's discriminant finds the drawing い-like too, bandBlocks)
     'り|std': [{ c: 'い', f: ['0-1.dmx', '1.ey'], m: [0.334, 0.5], s: [0.1379, 0.03], w: [0.274, -0.726], z: [3.016, -8.773], bz: [1.508, -4.387], th: 2.747, g: 0.037,
       pts: [{ kind: 'feature', j: 1, t: 0.5, label: '1번째 획과 2번째 획의 간격', text: '2번째 획을 1번째 획에 더 가깝게 써요' },
         { kind: 'end', j: 1, t: 1, label: '2번째 획의 끝 위치(아래)', text: '2번째 획을 더 아래까지 그어요' }] },
       { c: 'い', all: true, f: ['0-1.dmx', '0-1.lr', '1.dx', '0-1.dey'], m: [0.3748, 0.1384, -0.1166, 0.4092], s: [0.1387, 0.2292, 0.1697, 0.2601], w: [0.396, -0.268, 0.288, -0.048], z: [2.63, -2.65, 1.8, -1.37], bz: [1.32, -1.33, 0.9, -0.69], th: 1.9, g: 0.08,
         pt: { kind: 'feature', j: 1, t: 0.5, label: '1번째 획과 2번째 획의 간격', text: '2번째 획은 1번째 획 가까이에서 시작해 아래까지 길게 내려 그어요(い는 2번째 획이 짧고 오른쪽으로 떨어져 있어요)' } }],
+    // discriminant (all: true) of い against り (tools/bench/natural/fix/calib-iri.js: natural い incl. edge drawings, dev, private
+    // calibration drawings and the API distortion model; th = the 99.8th percentile of い's own drawings)
+    'い|std': [{ c: 'り', all: true, f: ['0-1.dmx', '0-1.lr', '1.dx', '0-1.dey'], m: [0.7447, -0.5082, 0.2505, -0.0226], s: [0.0932, 0.2439, 0.0819, 0.1601], w: [-0.304, 0.282, -0.337, 0.076], z: [-3.42, 2.9, -4.46, 3.64], bz: [-1.71, 1.45, -2.23, 1.82], th: 1.83, g: 0.08,
+      pt: { kind: 'feature', j: 1, t: 0.5, label: '2번째 획: 짧고 1번째 획과 떨어짐', text: '2번째 획은 1번째 획보다 짧게, 오른쪽으로 떨어뜨려 비스듬히 내려 써요(り는 2번째 획이 1번째 획 가까이에서 길게 내려와요)' } }],
     'ろ|std': [{ c: 'る', all: true, f: ['k0.curl', 'k0.endIn', 'gap'], m: [0.5379, 0.4025, 0.0508], s: [0.0904, 0.2785, 0.0183], w: [0.379, 0.253, -0.368], z: [6.47, 0.86, -4.74], bz: [3.23, 0.43, -2.37], th: 1.75, g: 0.08,
       pt: { kind: 'loop', j: 0, t: 0.92, label: '획 끝은 고리 없이 끝남', text: '끝은 둥글게 돌린 뒤 고리를 만들지 말고 왼쪽으로 빼며 끝내요(る는 끝에 작은 고리를 만들어요)' } }],
     'ヤ|std': [{ c: 'セ', f: ['1.teX', '0-1.eeX'], m: [0.1799, -0.2168], s: [0.2243, 0.1236], w: [0.531, 0.469], z: [3.597, 3.182], bz: [1.798, 1.591], th: 2.655, g: 0.045,
@@ -2922,10 +3042,15 @@
     'メ|std': [{ c: 'ヌ', all: true, f: ['0.sharp','0.sx','0.dx','gap'], m: [0.6357,0.2951,-0.6593,0.085], s: [0.3925,0.139,0.2189,0.0213], w: [0.229,-0.096,-0.08,-0.595], z: [2.71,-3.48,2.19,-6.51], bz: [1.35,-1.74,1.09,-3.25], th: 2.78, g: 0.08, pt: { kind: 'corner', j: 0, t: 0.2, label: '1번째 획은 오른쪽 위에서 꺾지 않음', text: '1번째 획은 가로로 긋지 말고 오른쪽 위에서 왼쪽 아래로 곧게 비스듬히 그어요(ヌ는 가로로 긋다가 꺾어요)' } }],
     // discriminant (all: true) of モ against も
     'モ|std': [{ c: 'も', all: true, f: ['0-2.ssY','2.sharp','2.teY','gap'], m: [0.0892,1.1317,-0.0065,0.0659], s: [0.1151,0.4191,0.268,0.0162], w: [-0.188,-0.042,-0.204,-0.567], z: [-2.48,0.13,-3.25,-6.41], bz: [-1.24,0.07,-1.62,-3.2], th: 2.73, g: 0.08, pt: { kind: 'start', j: 2, t: 0, label: '3번째 획의 시작 위치(위)', text: '3번째 획은 1번째 획에서 시작해 곧게 내려 긋고, 아래에서 꺾어 오른쪽으로 그어요(も는 세로획이 위로 나오고 아래가 둥글어요)' } }],
-    // discriminant (all: true) of リ against り
-    'リ|std': [{ c: 'り', all: true, f: ['0-1.lr','0.ey','0.teX','gap'], m: [0.6991,0.0626,-0.0281,0.032], s: [0.2626,0.1191,0.3596,0.0132], w: [0.027,-0.26,0.209,-0.504], z: [-1.64,-1.38,1.47,-3.46], bz: [-0.82,-0.69,0.73,-1.73], th: 1.65, g: 0.08, pt: { kind: 'hook', j: 0, t: 1, label: '1번째 획 끝은 튕기지 않음', text: '1번째 획은 짧고 곧게 내려 긋고 끝을 튕기지 않아요(り는 1번째 획이 길고 끝을 튕겨요)' } }],
   };
-  const prRules = (T) => PR_RULES[T.ch + '|' + T.variantId] || null;
+  // (a rule against a same-shape twin of the target — none today; り/リ became twins and lost theirs — never votes, vetoes
+  // or shows: drawing the twin is right)
+  const prRules = (T) => {
+    const rules = PR_RULES[T.ch + '|' + T.variantId];
+    if (!rules) return null;
+    const tw = TWINS.get(T.ch), out = tw && tw.size > 1 ? rules.filter((r) => !tw.has(r.c)) : rules;
+    return out.length ? out : null;
+  };
 
   // The per-stroke measures the rules use: start / end / centre, end tangent, and how close the first 30 % of the
   // stroke comes back to a part of itself at least 15 % of its length later (selfS); for the discriminants also the
@@ -2960,7 +3085,9 @@
   function prPairOf(A, B) {
     const bw = Math.max(1e-6, B.w);
     return { dmx: B.mx - A.mx, eeX: B.ex - A.ex, ssX: B.sx - A.sx, ssY: B.sy - A.sy, dey: B.ey - A.ey, wr: A.w / bw, rel: (A.ex - B.x0) / bw,
-      lr: Math.log(Math.max(B.len, 0.02) / Math.max(A.len, 0.02)) };
+      lr: Math.log(Math.max(B.len, 0.02) / Math.max(A.len, 0.02)),
+      // heights (log ratio; a flick at a stroke's foot does not count) and how far B reaches below A's lowest point
+      hr: Math.log(Math.max(B.y1 - B.y0, 0.02) / Math.max(A.y1 - A.y0, 0.02)), dby: B.y1 - A.y1 };
   }
   // Measures on the registered drawing (the key points' parts) of template stroke j: 'curl' — how far the stroke turns
   // (turns) after the template's last corner on it, stopping PR_END short of its end (ろ's bowl ends there; る's curls on
@@ -3038,7 +3165,7 @@
       if (rule.pt) return { score: none ? -Infinity : s, hits: [none ? null : s <= rule.th], why: 0 };
       return { score: none ? -Infinity : s, hits, why };
     });
-    return { T: al.T, rules, sc };
+    return { T: al.T, rules, sc, ctx };
   }
   // The look-alike the pair rules vote for (accepted shapes only), or null.
   function prVote(pr, costOf, costT, strictness, vetoed) {
@@ -3054,8 +3181,8 @@
   }
   // Mutual consistency of the discriminants: look-alike C is not named over target T (not by the shape match, the
   // checkpoints or T's own rules) when C's own discriminant against T (an all: true rule of C's form, c = T) votes T on
-  // the drawing, measured on C's alignment — the drawing is then clearly unlike C's own drawings, on T's side: り with a
-  // short left stroke that keeps its hook is not リ (リ's own rule says り), a sharp-cornered レ with a low end is not し.
+  // the drawing, measured on C's alignment — the drawing is then clearly unlike C's own drawings, on T's side: a
+  // sharp-cornered レ with a low end is not し, り whose right stroke runs long beside the left is not い (い's rule says り).
   // Without it such a drawing was turned down both as T and as C. The veto protects the target, so strictness works the
   // other way round from a vote: threshold th / PR_TH.strict when strict, th otherwise (lenient does not veto more readily:
   // on dev that let 4 more rough look-alikes through), the shapes within g.
@@ -3077,6 +3204,39 @@
       if (!none && s > rule.th * thf) return true;
     }
     return false;
+  }
+  // Proportion pairs (い / り): the benefit of the doubt for the asked character. い and り differ in their proportions (り: the
+  // right stroke long, reaching well below the left one, close to it, sweeping left; い: the right stroke shorter, apart,
+  // slanting right), and natural handwriting covers the space between (tools/bench/natural: edge drawings, the い ↔ り
+  // continuum). For such a pair look-alike C is named over the asked character T — by the shape match, the checkpoints or
+  // T's rules (the り←い pair rule included) — only when C fits clearly better (cost(C) < cost(T) − BAND_GAP) or T's own
+  // discriminant against C finds the drawing C-like (score > BAND.TH × th: past T's own drawings' 99th percentile or so;
+  // its own vote needs th). An ambiguous drawing is T; one the discriminant cannot measure (a joined or broken stroke) is
+  // judged as before. pr = prMeasure() of the drawing.
+  // BAND_DEF: C's defining proportions, which the drawing must show before T's discriminant may name C (when C does not
+  // fit clearly better). い asked: り is named only when the right stroke is clearly taller than the left (log height ratio
+  // 0-1.hr ≥ hr) or reaches clearly below it (0-1.dby ≥ dby) — decision (ii): "り: right stroke clearly much longer and
+  // descending well below". Without it an い whose right stroke is about as long as the left, drawn upright or close, was
+  // turned down as り (verification set, scratch: core い 4.4 %, い with a right stroke 0.85–1 × the left 45 %, the
+  // discriminant's 1.dx and 0-1.dmx reading an upright right stroke as り's); with it 0.3–0.6 % / 8–15 %, clear り for い
+  // still 100 % ✕, dev unchanged (OR of the two at 0.1: the AND of them at 0 let a 25 % morph through on dev).
+  const BAND_PAIRS = { 'い': ['り'], 'り': ['い'] };
+  const BAND_GAP = { lenient: 0.035, normal: 0.03, strict: 0.02 }; // (tools/bench/natural/fix/band-gap.js)
+  const BAND = { TH: 0.8 }; // the gate: T's discriminant at this × its th (a vote needs th; tools/bench/natural/fix/band-th.js)
+  const BAND_DEF = { 'い': { c: 'り', hr: 0.1, dby: 0.1 } };
+  function bandBlocks(an, pr, target, C, strictness) {
+    // (the pair of the form the rules were measured on: リ asked and written like り is protected like り)
+    if (!pr || !((BAND_PAIRS[target] || []).includes(C) || (BAND_PAIRS[pr.T.ch] || []).includes(C))) return false;
+    const e = an.list.find((x) => x.ch === C);
+    if (!e || e.al.cost < an.tgt.al.cost - (BAND_GAP[strictness] || BAND_GAP.normal)) return false;
+    const dp = BAND_DEF[pr.T.ch];
+    if (dp && dp.c === C && pr.ctx) {
+      const hr = prValue(pr.ctx, '0-1.hr'), dby = prValue(pr.ctx, '0-1.dby');
+      if (isFinite(hr) && isFinite(dby) && hr < dp.hr && dby < dp.dby) return true;
+    }
+    const ri = pr.rules.findIndex((r) => r.all && r.c === C);
+    if (ri < 0 || !isFinite(pr.sc[ri].score)) return false;
+    return !(pr.sc[ri].score > BAND.TH * pr.rules[ri].th * Math.min(1, PR_TH[strictness] || PR_TH.normal)); // (lenient: not raised — the band is the leniency)
   }
   // The rules' points merged into a public point list (in place): a measure joins the checkpoint of the same kind on
   // the same stroke that is critical against the same look-alike, or becomes a point of its own. With pr (a judged
@@ -3190,13 +3350,17 @@
     // stroke, リ for り …)
     const ordered = !st.reversed.length && !st.orderErrors.length;
     const acc = ordered ? th.accept : th.acceptOrder;
-    // a look-alike whose own discriminant against the target says the drawing is the target is not named (prVeto)
-    const vetoes = new Map();
-    const vetoed = (c) => { if (!vetoes.has(c)) vetoes.set(c, prVeto(an, U, target, c, opts.strictness)); return vetoes.get(c); };
-    const beater = tgt.al.cost <= acc ? beaterOf(an, ordered ? th : Object.assign({}, th, { margin: th.marginOrder }), vetoed) : null;
     // key points (판별 포인트) of the target's form, measured on the drawing: the checkpoints and the pair rules
-    const ev = kpEvaluate(U, an);
     const pr = prMeasure(an, U, target);
+    // a look-alike whose own discriminant against the target says the drawing is the target is not named (prVeto), nor one
+    // of a proportion pair (い / り) that the drawing does not clearly show (bandBlocks)
+    const vetoes = new Map();
+    const vetoed = (c) => {
+      if (!vetoes.has(c)) vetoes.set(c, bandBlocks(an, pr, target, c, opts.strictness) || prVeto(an, U, target, c, opts.strictness));
+      return vetoes.get(c);
+    };
+    const beater = tgt.al.cost <= acc ? beaterOf(an, ordered ? th : Object.assign({}, th, { margin: th.marginOrder }), vetoed) : null;
+    const ev = kpEvaluate(U, an);
     res.keypoints = kpResult(ev, target, pr, null);
     const shapeOK = tgt.al.cost <= acc && !beater;
 
@@ -3248,6 +3412,16 @@
         res.structure = publicStructure(st, true);
         res.issues = structureIssues(st, form, target);
         res.verdict = res.issues.length ? 'order' : 'correct';
+        // a near same-shape twin (り/リ) whose form fits the drawing clearly better (TWIN_NOTE): accepted all the same, with a
+        // gentle note on how the target's own form differs (never an issue: the grade stays)
+        // (り's note is about the flick of its left stroke: not when the drawing has one — a り with a short left stroke and
+        // a clear flick fits リ's form better too, and was told to flick)
+        const own = list.find((e) => e.ch === target);
+        const flick = TWIN_FLICK[target];
+        if (form.T.ch !== target && k.twinNote && TWINS.get(target).has(form.T.ch) && own && own.al.cost - form.cost >= P.TWIN_NOTE &&
+          (flick === undefined || !(flickRise(U, form, flick) >= P.TWIN_FLICK))) {
+          res.notes = [{ type: 'twin', message: k.twinNote }];
+        }
         return false;
       }
       // a stroke was left out: explained with the reading that has the missing stroke
@@ -3535,6 +3709,6 @@
     // tuning / debugging hooks (not part of the API; may change without notice)
     _params: P,
     _internals: { buildTemplates, prepareInput, analyse, align, rank, refine, structureOf, publicStructure, missingReading, closeSet, beaterOf, BY_CHAR, TEMPLATES,
-      BOX, XINFO, placementOf, twinsOf, bySize, KP, kpModel, partsOf, measure, kpDist, strokeFeatures, shapeOf, relation, kpEvaluate, kpBeater, kpPair, inkOn, loopMissed, PAIR_LEAD, prContext, prValue, prMeasure, PR_RULES },
+      BOX, XINFO, placementOf, joinOf, joinedRun, flickRise, twinsOf, bySize, KP, kpModel, partsOf, measure, kpDist, strokeFeatures, shapeOf, relation, kpEvaluate, kpBeater, kpPair, inkOn, loopMissed, PAIR_LEAD, prContext, prValue, prMeasure, PR_RULES, PR_TH, prVeto, prVote, bandBlocks, BAND_PAIRS, BAND_GAP, BAND, BAND_DEF, explains },
   };
 });
